@@ -1,0 +1,192 @@
+==============================================
+ RHOAI 3.5.2 Field Source -- Enable All Features
+==============================================
+
+  Step  | What                                       | Risk
+  ------|--------------------------------------------|-----------------
+   1    | Prerequisites check                        | None
+   2    | User Workload Monitoring                   | None
+   3a   | Install 8 non-disruptive operators         | None
+   3b   | Wait + post-install CRs                    | None
+   4    | DSCI merge patch (monitoring config)       | None (COO ready)
+   5    | DSC merge patch (all components)           | None (cert-mgr)
+   6    | MLflow + demo project + EvalHub            | None
+   7    | MaaS Gateway CRs                           | None
+   8    | Dashboard menu + accelerator rules         | None
+   9    | Install RHCL + Kuadrant + Authorino TLS   | NETWORK DISRUPTION
+  10    | Dashboard restart                          | None
+  11    | Verification (flags NOT READY)             | None
+
+[INFO] (0m00s) Steps 1-8 complete before any network disruption (RHCL at Step 9).
+
+[INFO] (0m00s) === Step 1/11: Prerequisites ===
+[OK]   Logged in: admin @ https://api.ocp.wbcnb.sandbox1236.opentlc.com:6443
+[OK]   RHOAI: 3.5.2
+[OK]   DSC: default-dsc
+[OK]   DSCI: default-dsci
+
+[INFO] (0m06s) === Step 2/11: User Workload Monitoring ===
+[OK]   User Workload Monitoring already enabled
+[OK]   User Workload Monitoring pods
+
+[INFO] (0m10s) === Step 3a/11: Install non-disruptive operators ===
+[OK]   NFD
+[OK]   NVIDIA GPU Operator
+[OK]   cert-manager
+[OK]   LWS (LeaderWorkerSet)
+[OK]   OpenTelemetry
+[OK]   Tempo
+[OK]   COO (Cluster Observability)
+[OK]   DevSpaces
+
+[OK]   All non-disruptive operators already installed
+
+[INFO] (0m23s) === Step 3b/11: Post-install CRs ===
+[OK]   NodeFeatureDiscovery CR already exists
+[OK]   ClusterPolicy already exists
+[OK]   LeaderWorkerSetOperator CR already exists
+[INFO] (0m29s) Configuring UIPlugins...
+uiplugin.observability.openshift.io/dashboards unchanged
+uiplugin.observability.openshift.io/monitoring unchanged
+[OK]   UIPlugins (dashboards + monitoring) configured
+[OK]   CheCluster already exists (phase: Active)
+
+[INFO] (0m35s) === Step 4/11: DSCI merge patch ===
+[OK]   COO is Succeeded -- safe to patch DSCI monitoring
+[INFO] (0m39s) Applying full DSCI merge patch (monitoring: Managed, metrics, traces)...
+dscinitialization.dscinitialization.opendatahub.io/default-dsci patched (no change)
+[OK]   DSCI patched
+[OK]   MonitoringStack
+[OK]   Perses
+
+[INFO] (0m43s) === Step 5/11: DSC merge patch ===
+[INFO] (0m44s) Applying full DSC merge patch (all components)...
+datasciencecluster.datasciencecluster.opendatahub.io/default-dsc patched (no change)
+[OK]   DSC patched (all components activated)
+[OK]   OGX CRD
+
+[INFO] (0m47s) === Step 6/11: MLflow server + demo project + EvalHub ===
+[OK]   Namespace 'demo' exists
+[OK]   demo labeled as Data Science Project
+[OK]   MLflow CRD
+[OK]   MLflow CRD registered
+[OK]   MLflow server running
+[INFO] (0m55s) Creating MLflow client ConfigMaps in demo...
+configmap/mlflow-client-env unchanged
+configmap/mlflow-autolog-init unchanged
+[OK]   MLflow client ConfigMaps created
+[OK]   MLflow SA token secret exists
+[OK]   EvalHub CRD registered
+[OK]   EvalHub already exists in redhat-ods-applications
+[OK]   EvalHub MLFLOW_TRACKING_URI already set
+[INFO] (1m00s) Configuring EvalHub RBAC for demo namespace...
+rolebinding.rbac.authorization.k8s.io/evalhub-central-mlflow-access unchanged
+rolebinding.rbac.authorization.k8s.io/evalhub-central-jobs-writer unchanged
+rolebinding.rbac.authorization.k8s.io/evalhub-central-job-config unchanged
+[OK]   evalhub SA already has edit in demo
+[OK]   evalhub-service secret access already configured
+[OK]   evalhub-service-ca ConfigMap already in demo
+[OK]   EvalHub RBAC configured for demo namespace
+
+[INFO] (1m07s) === Step 7/11: MaaS Gateway CRs ===
+[INFO] (1m09s) Domain: apps.ocp.wbcnb.sandbox1236.opentlc.com, TLS: cert-manager-ingress-cert
+gatewayclass.gateway.networking.k8s.io/maas-gateway-class unchanged
+[OK]   maas-default-gateway already exists
+
+[INFO] (1m13s) === Step 8/11: Dashboard menu + accelerator rules ===
+odhdashboardconfig.opendatahub.io/odh-dashboard-config patched (no change)
+[OK]   Dashboard menu patched
+[INFO] (1m16s) Configuring accelerator metrics recording rules...
+prometheusrule.monitoring.coreos.com/accelerator-recording-rules unchanged
+[OK]   Accelerator metrics recording rules created
+[INFO] (1m20s) Configuring DCGM metrics for RHOAI MonitoringStack...
+servicemonitor.monitoring.coreos.com/nvidia-dcgm-exporter unchanged
+prometheusrule.monitoring.coreos.com/accelerator-recording-rules unchanged
+[OK]   DCGM ServiceMonitor + recording rules in redhat-ods-monitoring
+
+================================================================
+[OK]   Steps 1-8 complete (1m23s). All configuration committed.
+[WARN] Step 9 (RHCL) may briefly disrupt ingress/Web Terminal.
+[WARN] If disconnected, re-run this script -- completed steps are skipped.
+================================================================
+
+[INFO] (1m23s) === Step 9/11: RHCL + Kuadrant + Authorino TLS ===
+[OK]   RHCL operator subscription exists
+[OK]   RHCL operator Succeeded
+[OK]   Kuadrant CR already exists in kuadrant-system
+[INFO] (1m29s) Waiting for Kuadrant to become Ready...
+[OK]   Kuadrant CR Ready in kuadrant-system
+[OK]   Authorino TLS already enabled in kuadrant-system
+[OK]   RHCL console plugin already enabled
+
+[INFO] (1m35s) === Step 10/11: Dashboard restart ===
+deployment.apps/rhods-dashboard restarted
+[INFO] (1m37s) Restarting (1-2 min)...
+deployment "rhods-dashboard" successfully rolled out
+[OK]   Dashboard restarted
+
+[INFO] (2m55s) === Step 11/11: Verification ===
+[INFO] (2m55s) DSC components:
+  [OK] MLflowOperatorReady
+  [OK] OGXReady
+  [OK] AIGatewayReady
+  [OK] KserveReady
+  [OK] TrustyAIReady
+  [OK] AIPipelinesReady
+  [OK] DashboardReady
+  [OK] WorkbenchesReady
+  [--] ModelsAsAServiceReady (expected -- becomes Ready after first llm-d model is deployed)
+  [OK] ModelRegistryReady
+  [OK] FeastOperatorReady
+
+[INFO] (3m23s) Operators (non-disruptive):
+  [OK] NFD
+  [OK] NVIDIA GPU Operator
+  [OK] cert-manager
+  [OK] LWS (LeaderWorkerSet)
+  [OK] OpenTelemetry
+  [OK] Tempo
+  [OK] COO (Cluster Observability)
+  [OK] DevSpaces
+  [OK] RHCL (Connectivity Link)
+
+[INFO] (3m38s) Observability:
+  [OK] MonitoringStack
+  [OK] Perses
+
+[INFO] (3m39s) Operator CRs:
+  [OK] NodeFeatureDiscovery
+  [OK] ClusterPolicy (ready)
+  [OK] LeaderWorkerSetOperator CR
+  [OK] Kuadrant CR (Ready)
+  [OK] Authorino TLS (enabled)
+
+[INFO] (3m44s) Console Plugins:
+  [OK] kuadrant-console-plugin
+  [OK] console-dashboards-plugin
+  [OK] monitoring-console-plugin
+
+[INFO] (3m49s) Services:
+  [OK] MLflow server
+  [OK] EvalHub
+  [OK] CheCluster (Active)
+
+[INFO] (3m52s) Gateway:
+  data-science-gateway -> data-science-gateway-data-science-gateway-class.openshift-ingress.svc.cluster.local
+  maas-default-gateway -> a386044a364774ba7baa261e564ffa96-1883852804.us-east-2.elb.amazonaws.com
+
+[INFO] (3m53s) Dashboard URL:
+  https://data-science-gateway.apps.ocp.wbcnb.sandbox1236.opentlc.com
+
+==============================================
+[OK]   All checks passed. Total time: 3m54s
+
+  Next steps:
+  - MaaS setup: bash scripts/field-source-setup-maas-35.sh
+
+  - Workshop prep: see scripts/workshop-prep/
+    setup_workshop_users_rbac.sh  (Keycloak users + RBAC)
+    gpu_machineset_hardwareprofiles.sh (MachineSet + HardwareProfile)
+
+  - DevSpaces: oc get checluster devspaces -n openshift-devspaces -o jsonpath='{.status.cheURL}'
+==============================================
