@@ -331,18 +331,18 @@ cat > "$showroom_tmp/traefik-dynamic.yml" <<TRAEFIK_DYNAMIC
 http:
   routers:
     showroom:
-      rule: "PathPrefix(\\\`/\\\`)"
+      rule: "PathPrefix(\`/\`)"
       entryPoints: [web]
       service: showroom
       priority: 1
     console-proxy:
-      rule: "PathPrefix(\\\`/proxy/console\\\`)"
+      rule: "PathPrefix(\`/proxy/console\`)"
       entryPoints: [web]
       service: console
       middlewares: [strip-frame-headers, console-stripprefix]
       priority: 100
     dashboard-proxy:
-      rule: "PathPrefix(\\\`/proxy/dashboard\\\`)"
+      rule: "PathPrefix(\`/proxy/dashboard\`)"
       entryPoints: [web]
       service: dashboard
       middlewares: [strip-frame-headers, dashboard-stripprefix]
@@ -400,7 +400,8 @@ UI_HEAD
     printf '    url: "/proxy/dashboard/"\n'
   fi
   printf '  - name: OpenShift Console\n'
-  printf '    url: "/proxy/console/"\n'
+  printf '    url: "%s"\n' "$showroom_console"
+  printf '    external: true\n'
 
   if [[ -n "${EXTRA_TABS:-}" ]]; then
     while IFS= read -r _tab_line; do
