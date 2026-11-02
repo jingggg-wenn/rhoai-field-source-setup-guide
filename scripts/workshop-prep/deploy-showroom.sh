@@ -2,22 +2,26 @@
 ###############################################################################
 # deploy-showroom.sh
 #
-# Deploy N workshop guides as a merged Antora Showroom on OpenShift.
-# Follows the showroom-editor multi-content pattern (clone → build → content)
-# but requires no Helm, Docker build, or separate application.
+# Deploy per-user Showroom instances for workshop participants on OpenShift.
+# Each user gets their own namespace (showroom-<username>), Route, and
+# personalized Antora attributes (username, password, login command).
 #
-# Multi-workshop mode (recommended):
+# Users are discovered from Keycloak (auto) or supplied explicitly.
+#
+# Usage (auto-discover users from Keycloak):
 #   export SITE_TITLE="RHOAI Hands-on Workshop"
 #   export WORKSHOPS="
-#   basic-inference|https://github.com/org/repo1.git|main|content|Basic Inference
-#   agentops|https://github.com/org/repo2.git|main|content|AgentOps Workshop
+#   basic-inference|https://github.com/org/repo.git|main|content|Basic Inference
 #   "
 #   bash deploy-showroom.sh
 #
-# Single-workshop mode (backward compatible):
-#   export GIT_URL='https://github.com/org/workshop.git'
-#   export GIT_REF='main'
-#   export CONTENT_PATH='content'
+# Usage (explicit user list):
+#   export WORKSHOP_USERS="user1,user2,user3,user4"
+#   export USER_PASSWORD="openshift"
+#   export SITE_TITLE="RHOAI Hands-on Workshop"
+#   export WORKSHOPS="
+#   basic-inference|https://github.com/org/repo.git|main|content|Basic Inference
+#   "
 #   bash deploy-showroom.sh
 #
 # WORKSHOPS format (pipe-delimited, one per line):
@@ -29,21 +33,28 @@
 #   - title:        display name on the home page (optional; falls back to name)
 #   Blank lines and lines starting with # are ignored.
 #
-# Optional environment variables:
-#   SITE_TITLE       Site title (default: "Workshop")
-#   SHOWROOM_NS      Force a specific namespace (default: auto-generated)
-#   EXTRA_TABS       Additional nookbag tabs, pipe-delimited:
-#                      name|url|external  (one per line)
+# Environment variables:
+#   WORKSHOPS          Multi-workshop list (required unless GIT_URL is set)
+#   GIT_URL / GIT_REF / CONTENT_PATH   Single-workshop mode (backward compat)
+#   SITE_TITLE         Site title (default: "Workshop")
+#   WORKSHOP_USERS     Comma-separated user list; if unset, discovers from Keycloak
+#   USER_PASSWORD      Common password; if unset, discovers from Keycloak
+#   KC_NAMESPACE       Keycloak namespace for auto-discovery (default: "keycloak")
+#   KC_REALM_IMPORT_NAME  KeycloakRealmImport CR name (default: "sso")
+#   MAX_PARALLEL       Max parallel rollout waits (default: 10)
+#   HOME_INDEX_FILE    Custom home page .adoc — local path or https:// URL
+#   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
 #
-# Requirements: bash, oc, sha256sum (or shasum), mktemp, date, tr.
-# All build logic is in ConfigMap-embedded scripts — no local Helm, Docker,
-# Python, Git, or container engine needed. The quay.io/rhpds images (git-cloner,
-# antora, showroom-content) are used unchanged; every customization goes through
-# ConfigMap files so small tweaks never require an image rebuild.
+# Requirements: bash, oc, curl, sha256sum (or shasum), mktemp, date, tr.
 ###############################################################################
 set -euo pipefail
 
-showroom_fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+_red='\033[0;31m'; _green='\033[0;32m'; _yellow='\033[1;33m'
+_cyan='\033[0;36m'; _nc='\033[0m'
+showroom_info()    { printf "${_cyan}[INFO]${_nc} %s\n" "$*"; }
+showroom_success() { printf "${_green}[ OK ]${_nc} %s\n" "$*"; }
+showroom_warn()    { printf "${_yellow}[WARN]${_nc} %s\n" "$*"; }
+showroom_fail()    { printf "${_red}[ERR ]${_nc} %s\n" "$*" >&2; exit 1; }
 
 # sha256sum or shasum (macOS)
 if command -v sha256sum >/dev/null 2>&1; then
@@ -54,20 +65,19 @@ else
   showroom_fail "Required command missing: sha256sum (or shasum)"
 fi
 
-for _cmd in oc tr mktemp date; do
+for _cmd in oc curl tr mktemp date; do
   command -v "$_cmd" >/dev/null 2>&1 || showroom_fail "Required command missing: $_cmd"
 done
 
 ###############################################################################
-# 1. Parse inputs
+# 1. Parse workshop inputs
 ###############################################################################
 declare -a ws_names=() ws_urls=() ws_refs=() ws_paths=() ws_titles=()
 ws_count=0
 
 if [[ -n "${WORKSHOPS:-}" ]]; then
-  # ── Multi-workshop mode ──
   while IFS= read -r _line; do
-    _line="${_line%%#*}"           # strip comments
+    _line="${_line%%#*}"
     _line="$(echo "$_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -z "$_line" ]] && continue
 
@@ -78,40 +88,27 @@ if [[ -n "${WORKSHOPS:-}" ]]; then
     _path="$(echo "$_path" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     _title="$(echo "${_title:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
-    # Validate name (Antora component name / URL path)
     [[ "$_name" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || \
       showroom_fail "Workshop name must be lowercase alphanumeric with hyphens: '$_name'"
     [[ "$_name" != "home" ]] || showroom_fail "Workshop name 'home' is reserved."
-
-    # Validate URL
     [[ "$_url" =~ ^https://[^/@[:space:]]+/[^[:space:]?#]+$ ]] || \
       showroom_fail "Workshop '$_name': git_url must be HTTPS without credentials: '$_url'"
-
-    # Validate ref
     [[ "$_ref" != -* && ! "$_ref" =~ [[:space:]] ]] || \
       showroom_fail "Workshop '$_name': git_ref is invalid: '$_ref'"
-
-    # Validate content_path
     [[ "$_path" =~ ^[A-Za-z0-9._/-]+$ && "$_path" != /* && ! "$_path" =~ (^|/)\.\.(/|$) ]] || \
       showroom_fail "Workshop '$_name': content_path must be relative without ..: '$_path'"
 
-    # Check for duplicates
     for _existing in "${ws_names[@]+"${ws_names[@]}"}"; do
       [[ "$_existing" != "$_name" ]] || showroom_fail "Duplicate workshop name: '$_name'"
     done
 
-    ws_names+=("$_name")
-    ws_urls+=("$_url")
-    ws_refs+=("$_ref")
-    ws_paths+=("$_path")
-    ws_titles+=("${_title:-$_name}")
+    ws_names+=("$_name"); ws_urls+=("$_url"); ws_refs+=("$_ref")
+    ws_paths+=("$_path"); ws_titles+=("${_title:-$_name}")
     ws_count=$((ws_count + 1))
   done <<< "$WORKSHOPS"
-
   [[ $ws_count -gt 0 ]] || showroom_fail "WORKSHOPS is set but contains no valid entries."
 
 elif [[ -n "${GIT_URL:-}" ]]; then
-  # ── Single-workshop backward-compatible mode ──
   : "${GIT_REF:?Set GIT_REF to a branch, tag, or commit}"
   : "${CONTENT_PATH:?Set CONTENT_PATH to the directory containing antora.yml}"
   [[ "$GIT_URL" =~ ^https://[^/@[:space:]]+/[^[:space:]?#]+$ ]] || \
@@ -120,29 +117,64 @@ elif [[ -n "${GIT_URL:-}" ]]; then
     showroom_fail 'GIT_REF must not start with a dash or contain whitespace.'
   [[ "$CONTENT_PATH" =~ ^[A-Za-z0-9._/-]+$ && "$CONTENT_PATH" != /* && ! "$CONTENT_PATH" =~ (^|/)\.\.(/|$) ]] || \
     showroom_fail 'CONTENT_PATH must be a relative directory without .. segments.'
-
-  ws_names+=("workshop")
-  ws_urls+=("$GIT_URL")
-  ws_refs+=("$GIT_REF")
-  ws_paths+=("$CONTENT_PATH")
-  ws_titles+=("Workshop")
-  ws_count=1
+  ws_names+=("workshop"); ws_urls+=("$GIT_URL"); ws_refs+=("$GIT_REF")
+  ws_paths+=("$CONTENT_PATH"); ws_titles+=("Workshop"); ws_count=1
 else
-  showroom_fail 'Set WORKSHOPS (multi-workshop) or GIT_URL (single workshop). See script header for usage.'
+  showroom_fail 'Set WORKSHOPS (multi-workshop) or GIT_URL (single workshop). See script header.'
 fi
 
 SITE_TITLE="${SITE_TITLE:-Workshop}"
 
-printf 'Showroom: "%s" (%d workshop(s))\n' "$SITE_TITLE" "$ws_count"
+showroom_info "Showroom: \"$SITE_TITLE\" ($ws_count workshop(s))"
 for _i in $(seq 0 $((ws_count - 1))); do
   printf '  %d. %-24s %s @ %s (%s)\n' "$((_i+1))" "${ws_names[$_i]}" "${ws_urls[$_i]}" "${ws_refs[$_i]}" "${ws_paths[$_i]}"
 done
 echo ""
 
 ###############################################################################
-# 2. Cluster information
+# 2. Discover users
 ###############################################################################
-showroom_user="$(oc whoami 2>/dev/null)" || showroom_fail 'Log in with oc login first.'
+KC_NAMESPACE="${KC_NAMESPACE:-keycloak}"
+KC_REALM_IMPORT_NAME="${KC_REALM_IMPORT_NAME:-sso}"
+MAX_PARALLEL="${MAX_PARALLEL:-10}"
+
+declare -a showroom_users=()
+
+if [[ -n "${WORKSHOP_USERS:-}" ]]; then
+  IFS=',' read -ra showroom_users <<< "$WORKSHOP_USERS"
+  showroom_info "Using explicit user list: ${showroom_users[*]}"
+elif oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" &>/dev/null; then
+  _kc_raw=$(oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" \
+      -o jsonpath='{.spec.realm.users[*].username}' 2>/dev/null || true)
+  for _u in $_kc_raw; do
+    [[ "$_u" == "admin" ]] && continue
+    showroom_users+=("$_u")
+  done
+  showroom_info "Auto-discovered ${#showroom_users[@]} workshop user(s) from Keycloak: ${showroom_users[*]}"
+else
+  showroom_fail "Set WORKSHOP_USERS or ensure Keycloak is deployed with KeycloakRealmImport '$KC_REALM_IMPORT_NAME' in namespace '$KC_NAMESPACE'."
+fi
+
+[[ ${#showroom_users[@]} -gt 0 ]] || showroom_fail "No users found."
+
+# Discover password
+if [[ -z "${USER_PASSWORD:-}" ]]; then
+  if oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" &>/dev/null; then
+    _kc_pw=$(oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" \
+      -o jsonpath='{.spec.realm.users[0].credentials[0].value}' 2>/dev/null || true)
+    if [[ -n "$_kc_pw" ]]; then
+      USER_PASSWORD="$_kc_pw"
+      showroom_info "Auto-discovered password from Keycloak."
+    fi
+  fi
+fi
+USER_PASSWORD="${USER_PASSWORD:-Use the credentials provided by your instructor}"
+
+###############################################################################
+# 3. Cluster information
+###############################################################################
+showroom_info "Collecting cluster information..."
+showroom_logged_in_as="$(oc whoami 2>/dev/null)" || showroom_fail 'Log in with oc login first.'
 showroom_api="$(oc whoami --show-server)"
 showroom_domain="$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}')"
 [[ "$showroom_domain" =~ ^[a-zA-Z0-9.-]+$ ]] || showroom_fail 'Could not determine the cluster ingress domain.'
@@ -161,97 +193,82 @@ fi
 showroom_ai_url=""
 [[ -z "$showroom_ai_host" ]] || showroom_ai_url="https://${showroom_ai_host}/"
 
-###############################################################################
-# 3. Namespace
-###############################################################################
-if [[ -n "${SHOWROOM_NS:-}" ]]; then
-  showroom_ns="$SHOWROOM_NS"
-elif [[ $ws_count -eq 1 && -n "${GIT_URL:-}" ]]; then
-  # Single-workshop backward-compatible namespace naming:
-  # showroom-<slug-from-git-url>-<hash-of-url+path>
-  _slug="${GIT_URL%/}"; _slug="${_slug##*/}"; _slug="${_slug%.git}"
-  _slug="$(printf '%s' "$_slug" | tr '[:upper:]_' '[:lower:]-' | tr -cd 'a-z0-9-')"
-  _slug="${_slug:0:28}"; _slug="${_slug:-workshop}"
-  _hash="$(printf '%s\n%s' "$GIT_URL" "$CONTENT_PATH" | _sha256)"
-  _hash="${_hash:0:8}"
-  showroom_ns="showroom-${_slug}-${_hash}"
-else
-  # Multi-workshop namespace: showroom-<slug-from-title>-<hash-of-workshops>
-  _hash_input=""
-  for _i in $(seq 0 $((ws_count - 1))); do
-    _hash_input+="${ws_names[$_i]}|${ws_urls[$_i]}|${ws_paths[$_i]}"$'\n'
-  done
-  _hash="$(printf '%s' "$_hash_input" | _sha256)"
-  _hash="${_hash:0:8}"
+showroom_info "Logged in as: $showroom_logged_in_as"
+showroom_info "Cluster domain: $showroom_domain"
+showroom_info "Users: ${showroom_users[*]}"
+echo ""
 
-  _slug="$(printf '%s' "$SITE_TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-')"
-  _slug="${_slug:0:28}"
-  _slug="${_slug:-workshop}"
-  showroom_ns="showroom-${_slug}-${_hash}"
-fi
-
-showroom_host="showroom-${showroom_ns}.${showroom_domain}"
-showroom_url="https://${showroom_host}"
-showroom_run="$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
+###############################################################################
+# 4. Generate common ConfigMap files (once)
+###############################################################################
 showroom_tmp="$(mktemp -d)"
 trap 'rm -rf -- "$showroom_tmp"' EXIT
 
-printf 'Namespace : %s\nURL       : %s\n\n' "$showroom_ns" "$showroom_url"
-
-# Create or verify namespace ownership
-_existing="$(oc get namespace "$showroom_ns" --ignore-not-found -o jsonpath='{.metadata.name}')"
-if [[ -n "$_existing" ]]; then
-  _owner="$(oc get namespace "$showroom_ns" \
-    -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}')"
-  [[ "$_owner" == showroom-bootstrap ]] || \
-    showroom_fail "Namespace $showroom_ns exists and is not managed by this script."
-else
-  oc create namespace "$showroom_ns"
-  oc label namespace "$showroom_ns" app.kubernetes.io/managed-by=showroom-bootstrap
-fi
-
-###############################################################################
-# 4. Generate ConfigMap files
-###############################################################################
-printf 'Generating ConfigMap files...\n'
-
-# Whether to generate a home landing page (only for multi-workshop)
 _use_home=false
 [[ $ws_count -gt 1 ]] && _use_home=true
 
-# ── 4a. modules.txt ──
-# Format: key url ref path  (read by clone.sh)
+# ── modules.txt ──
 : > "$showroom_tmp/modules.txt"
 for _i in $(seq 0 $((ws_count - 1))); do
   printf '%s %s %s %s\n' "${ws_names[$_i]}" "${ws_urls[$_i]}" "${ws_refs[$_i]}" "${ws_paths[$_i]}" \
     >> "$showroom_tmp/modules.txt"
 done
 
-# ── 4b. attrs-<name>.yml ──
-# Common Antora attributes injected into each workshop's antora.yml by build.sh.
-# These are YAML files loaded by yq: .asciidoc.attributes *= load("attrs-<key>.yml")
-for _i in $(seq 0 $((ws_count - 1))); do
-  cat > "$showroom_tmp/attrs-${ws_names[$_i]}.yml" <<ATTRS_EOF
-user: "your-username"
-username: "your-username"
-guid: "your-username"
-password: "Use the credentials provided by your instructor"
-openshift_cluster_ingress_domain: "${showroom_domain}"
-openshift_api_url: "${showroom_api}"
-openshift_api_server_url: "${showroom_api}"
-openshift_cluster_console_url: "${showroom_console}"
-page-openshift_cluster_console_url: "${showroom_console}"
-login_command: "oc login -u <your-username> ${showroom_api}"
-ATTRS_EOF
-  if [[ -n "$showroom_ai_url" ]]; then
-    cat >> "$showroom_tmp/attrs-${ws_names[$_i]}.yml" <<RHOAI_ATTRS
-rhoai_dashboard_url: "${showroom_ai_url}"
-page-rhoai_dashboard_url: "${showroom_ai_url}"
-RHOAI_ATTRS
+# ── clone.sh ──
+cat > "$showroom_tmp/clone.sh" <<'CLONE_SCRIPT'
+#!/bin/sh
+set -eu
+export HOME=/tmp
+git config --global --add safe.directory '*'
+SOURCES=/showroom/sources; REPO=/showroom/repo
+mkdir -p "$SOURCES" "$REPO"
+while read -r key url ref path; do
+  [ -n "$key" ] || continue
+  echo "[clone] $key <- $url ($ref)"
+  rm -rf "${SOURCES:?}/$key"
+  git clone --quiet --depth 1 --branch "$ref" "$url" "$SOURCES/$key"
+  if [ ! -f "$SOURCES/$key/$path/antora.yml" ]; then
+    echo "[clone] ERROR: $key — $path/antora.yml not found" >&2; exit 1
   fi
-done
+done < /config/modules.txt
+if [ -f /config/home-antora.yml ]; then
+  echo "[clone] Generating home component..."
+  mkdir -p "$REPO/home/modules/ROOT/pages"
+  cp /config/home-antora.yml "$REPO/home/antora.yml"
+  cp /config/home-index.adoc "$REPO/home/modules/ROOT/pages/index.adoc"
+  cp /config/home-nav.adoc   "$REPO/home/modules/ROOT/nav.adoc"
+fi
+cp /config/site.yml "$REPO/site.yml"
+cd "$REPO"; rm -rf .git; git init --quiet; git add -A
+git -c user.name=showroom -c user.email=showroom@localhost commit --quiet -m "showroom"
+echo "[clone] All content ready."
+CLONE_SCRIPT
 
-# ── 4c. Home component (multi-workshop only) ──
+# ── build.sh ──
+cat > "$showroom_tmp/build.sh" <<'BUILD_SCRIPT'
+#!/bin/bash
+set -euo pipefail
+SOURCES=/showroom/sources; REPO=/showroom/repo
+while read -r key url ref path; do
+  [ -n "$key" ] || continue
+  descriptor="$SOURCES/$key/$path/antora.yml"
+  if [ ! -f "$descriptor" ]; then
+    echo "[build] ERROR: $key — $path/antora.yml not found" >&2; exit 1
+  fi
+  echo "[build] $key: rename component, inject attributes from attrs-$key.yml"
+  yq -i ".name = \"$key\" | .version = \"main\" | .asciidoc.attributes *= load(\"/config/attrs-$key.yml\")" "$descriptor"
+done < /config/modules.txt
+echo "[build] Running Antora..."
+antora --stacktrace "$REPO/site.yml"
+if [ -d /showroom/www ]; then
+  _page_count="$(find /showroom/www -name '*.html' | wc -l)"
+  echo "[build] Done — $_page_count HTML pages generated."
+else
+  echo "[build] ERROR: /showroom/www not created" >&2; exit 1
+fi
+BUILD_SCRIPT
+
+# ── Home component (multi-workshop only) ──
 if [[ "$_use_home" == true ]]; then
   cat > "$showroom_tmp/home-antora.yml" <<'HOME_ANTORA'
 name: home
@@ -260,11 +277,13 @@ nav:
   - modules/ROOT/nav.adoc
 HOME_ANTORA
 
-  # home-index.adoc — landing page listing all workshops
-  # Use HOME_INDEX_FILE to supply a custom .adoc; otherwise auto-generate.
-  if [[ -n "${HOME_INDEX_FILE:-}" && -f "$HOME_INDEX_FILE" ]]; then
+  if [[ -n "${HOME_INDEX_FILE:-}" && "${HOME_INDEX_FILE}" == https://* ]]; then
+    showroom_info "Downloading custom home page: $HOME_INDEX_FILE"
+    curl -fsSL "$HOME_INDEX_FILE" -o "$showroom_tmp/home-index.adoc" || \
+      showroom_fail "Failed to download HOME_INDEX_FILE: $HOME_INDEX_FILE"
+  elif [[ -n "${HOME_INDEX_FILE:-}" && -f "$HOME_INDEX_FILE" ]]; then
     cp "$HOME_INDEX_FILE" "$showroom_tmp/home-index.adoc"
-    printf 'Using custom home page: %s\n' "$HOME_INDEX_FILE"
+    showroom_info "Using custom home page: $HOME_INDEX_FILE"
   else
     {
       printf '= %s\n\n' "$SITE_TITLE"
@@ -276,7 +295,6 @@ HOME_ANTORA
     } > "$showroom_tmp/home-index.adoc"
   fi
 
-  # home-nav.adoc — left sidebar navigation
   {
     printf '* xref:index.adoc[Workshop Home]\n'
     for _i in $(seq 0 $((ws_count - 1))); do
@@ -285,144 +303,7 @@ HOME_ANTORA
   } > "$showroom_tmp/home-nav.adoc"
 fi
 
-# ── 4d. site.yml — Antora playbook ──
-{
-  cat <<SITE_HEAD
-site:
-  title: "${SITE_TITLE}"
-  url: "${showroom_url}"
-SITE_HEAD
-
-  if [[ "$_use_home" == true ]]; then
-    printf '  start_page: home::index.adoc\n'
-  else
-    printf '  start_page: %s::index.adoc\n' "${ws_names[0]}"
-  fi
-
-  printf 'content:\n  sources:\n'
-
-  # Home component source (from /showroom/repo which gets git-init'd)
-  if [[ "$_use_home" == true ]]; then
-    cat <<'HOME_SRC'
-    - url: /showroom/repo
-      branches: HEAD
-      start_path: home
-HOME_SRC
-  fi
-
-  # Workshop sources (each is a separate git clone)
-  for _i in $(seq 0 $((ws_count - 1))); do
-    printf '    - url: /showroom/sources/%s\n' "${ws_names[$_i]}"
-    printf '      branches: HEAD\n'
-    printf '      start_path: %s\n' "${ws_paths[$_i]}"
-  done
-
-  cat <<'SITE_TAIL'
-ui:
-  bundle:
-    url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/latest/ui-bundle.zip
-    snapshot: true
-runtime:
-  cache_dir: /tmp/.cache/antora
-output:
-  dir: /showroom/www
-SITE_TAIL
-} > "$showroom_tmp/site.yml"
-
-# ── 4e. clone.sh — init container 1 ──
-cat > "$showroom_tmp/clone.sh" <<'CLONE_SCRIPT'
-#!/bin/sh
-# init container 1: clone all workshop repos + prepare home component.
-# Follows the showroom-editor pattern: N repos → /showroom/sources/<key>/
-# Home component + site.yml → /showroom/repo/ (git-init'd for Antora).
-set -eu
-export HOME=/tmp
-git config --global --add safe.directory '*'
-
-SOURCES=/showroom/sources
-REPO=/showroom/repo
-
-mkdir -p "$SOURCES" "$REPO"
-
-# Clone each workshop repository
-while read -r key url ref path; do
-  [ -n "$key" ] || continue
-  echo "[clone] $key <- $url ($ref)"
-  rm -rf "${SOURCES:?}/$key"
-  git clone --quiet --depth 1 --branch "$ref" "$url" "$SOURCES/$key"
-  # Verify antora.yml exists
-  if [ ! -f "$SOURCES/$key/$path/antora.yml" ]; then
-    echo "[clone] ERROR: $key — $path/antora.yml not found" >&2
-    exit 1
-  fi
-done < /config/modules.txt
-
-# Prepare home component (if present in ConfigMap)
-if [ -f /config/home-antora.yml ]; then
-  echo "[clone] Generating home component..."
-  mkdir -p "$REPO/home/modules/ROOT/pages"
-  cp /config/home-antora.yml "$REPO/home/antora.yml"
-  cp /config/home-index.adoc "$REPO/home/modules/ROOT/pages/index.adoc"
-  cp /config/home-nav.adoc   "$REPO/home/modules/ROOT/nav.adoc"
-fi
-
-# Copy site playbook
-cp /config/site.yml "$REPO/site.yml"
-
-# Antora requires local content sources to be git repos
-cd "$REPO"
-rm -rf .git
-git init --quiet
-git add -A
-git -c user.name=showroom -c user.email=showroom@localhost commit --quiet -m "showroom"
-
-echo "[clone] All content ready."
-CLONE_SCRIPT
-
-# ── 4f. build.sh — init container 2 ──
-cat > "$showroom_tmp/build.sh" <<'BUILD_SCRIPT'
-#!/bin/bash
-# init container 2: normalize antora.yml per workshop, inject attributes, build.
-# Each workshop's component name is replaced with the key from modules.txt
-# to prevent collisions when multiple repos use the same Antora component name.
-set -euo pipefail
-
-SOURCES=/showroom/sources
-REPO=/showroom/repo
-
-# Normalize each workshop's antora.yml
-while read -r key url ref path; do
-  [ -n "$key" ] || continue
-  descriptor="$SOURCES/$key/$path/antora.yml"
-  if [ ! -f "$descriptor" ]; then
-    echo "[build] ERROR: $key — $path/antora.yml not found" >&2
-    exit 1
-  fi
-  echo "[build] $key: rename component, inject attributes from attrs-$key.yml"
-  yq -i ".name = \"$key\" | .version = \"main\" | .asciidoc.attributes *= load(\"/config/attrs-$key.yml\")" "$descriptor"
-done < /config/modules.txt
-
-# Build the merged Antora site
-echo "[build] Running Antora..."
-antora --stacktrace "$REPO/site.yml"
-
-# Verify output
-if [ -d /showroom/www ]; then
-  _page_count="$(find /showroom/www -name '*.html' | wc -l)"
-  echo "[build] Done — $_page_count HTML pages generated."
-else
-  echo "[build] ERROR: /showroom/www not created" >&2
-  exit 1
-fi
-BUILD_SCRIPT
-
-# ── 4g. traefik proxy configuration ──
-# Traefik acts as the pod entrypoint (port 8080), routing:
-#   /                  → content container (port 8000)
-#   /proxy/console/    → OpenShift Console (header stripping for inline iframe)
-#   /proxy/dashboard/  → RHOAI Dashboard (header stripping for inline iframe)
-# This follows the showroom-deployer pattern (quay.io/rhpds/traefik).
-
+# ── traefik-static.yml (same for all users) ──
 cat > "$showroom_tmp/traefik-static.yml" <<'TRAEFIK_STATIC'
 api:
   dashboard: false
@@ -445,27 +326,27 @@ global:
   sendAnonymousUsage: false
 TRAEFIK_STATIC
 
+# ── traefik-dynamic.yml (same for all users — cluster-level URLs) ──
 cat > "$showroom_tmp/traefik-dynamic.yml" <<TRAEFIK_DYNAMIC
 http:
   routers:
     showroom:
-      rule: "PathPrefix(\`/\`)"
+      rule: "PathPrefix(\\\`/\\\`)"
       entryPoints: [web]
       service: showroom
       priority: 1
     console-proxy:
-      rule: "PathPrefix(\`/proxy/console\`)"
+      rule: "PathPrefix(\\\`/proxy/console\\\`)"
       entryPoints: [web]
       service: console
       middlewares: [strip-frame-headers, console-stripprefix]
       priority: 100
     dashboard-proxy:
-      rule: "PathPrefix(\`/proxy/dashboard\`)"
+      rule: "PathPrefix(\\\`/proxy/dashboard\\\`)"
       entryPoints: [web]
       service: dashboard
       middlewares: [strip-frame-headers, dashboard-stripprefix]
       priority: 100
-
   services:
     showroom:
       loadBalancer:
@@ -481,7 +362,6 @@ http:
         passHostHeader: false
         servers:
           - url: "${showroom_ai_url:-${showroom_console}}"
-
   middlewares:
     strip-frame-headers:
       headers:
@@ -496,10 +376,7 @@ http:
         prefixes: ["/proxy/dashboard"]
 TRAEFIK_DYNAMIC
 
-# ── 4h. ui-config.yml — nookbag UI configuration ──
-# Tabs point to local proxy paths for inline iframe rendering.
-# If inline doesn't work (OAuth redirect issues), change to external: true
-# with the direct URL.
+# ── ui-config.yml template (same for all users) ──
 {
   cat <<UI_HEAD
 type: showroom
@@ -518,8 +395,6 @@ UI_HEAD
   fi
 
   printf 'tabs:\n'
-
-  # Default tabs — inline via traefik proxy
   if [[ -n "$showroom_ai_url" ]]; then
     printf '  - name: OpenShift AI Dashboard\n'
     printf '    url: "/proxy/dashboard/"\n'
@@ -527,7 +402,6 @@ UI_HEAD
   printf '  - name: OpenShift Console\n'
   printf '    url: "/proxy/console/"\n'
 
-  # Extra tabs from EXTRA_TABS env var
   if [[ -n "${EXTRA_TABS:-}" ]]; then
     while IFS= read -r _tab_line; do
       _tab_line="$(echo "$_tab_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
@@ -544,42 +418,129 @@ UI_HEAD
 } > "$showroom_tmp/ui-config.yml"
 
 ###############################################################################
-# 5. Create ConfigMap
+# 5. Deploy per-user Showrooms
 ###############################################################################
-printf 'Applying ConfigMap...\n'
+printf '\n'
+printf '══════════════════════════════════════════════════\n'
+printf ' Deploying Showroom for %d user(s)\n' "${#showroom_users[@]}"
+printf '══════════════════════════════════════════════════\n\n'
 
-_cm_args=(showroom-config -n "$showroom_ns" --dry-run=client -o yaml)
-_cm_args+=(--from-file=modules.txt="$showroom_tmp/modules.txt")
-_cm_args+=(--from-file=clone.sh="$showroom_tmp/clone.sh")
-_cm_args+=(--from-file=build.sh="$showroom_tmp/build.sh")
-_cm_args+=(--from-file=site.yml="$showroom_tmp/site.yml")
-_cm_args+=(--from-file=ui-config.yml="$showroom_tmp/ui-config.yml")
-_cm_args+=(--from-file=traefik-static.yml="$showroom_tmp/traefik-static.yml")
-_cm_args+=(--from-file=traefik-dynamic.yml="$showroom_tmp/traefik-dynamic.yml")
+declare -a _deployed_users=() _failed_users=()
 
-if [[ "$_use_home" == true ]]; then
-  _cm_args+=(--from-file=home-antora.yml="$showroom_tmp/home-antora.yml")
-  _cm_args+=(--from-file=home-index.adoc="$showroom_tmp/home-index.adoc")
-  _cm_args+=(--from-file=home-nav.adoc="$showroom_tmp/home-nav.adoc")
-fi
+for _username in "${showroom_users[@]}"; do
+  printf '━━━ [%s] Deploying... ━━━\n' "$_username"
 
-for _i in $(seq 0 $((ws_count - 1))); do
-  _cm_args+=(--from-file="attrs-${ws_names[$_i]}.yml=$showroom_tmp/attrs-${ws_names[$_i]}.yml")
-done
+  _ns="showroom-${_username}"
+  _host="showroom-${_ns}.${showroom_domain}"
+  _url="https://${_host}"
+  _run="$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
+  _user_tmp="$showroom_tmp/$_username"
+  mkdir -p "$_user_tmp"
 
-oc create configmap "${_cm_args[@]}" | oc apply -f -
+  # ── Per-user attrs ──
+  for _i in $(seq 0 $((ws_count - 1))); do
+    cat > "$_user_tmp/attrs-${ws_names[$_i]}.yml" <<ATTRS_EOF
+user: "${_username}"
+username: "${_username}"
+guid: "${_username}"
+password: "${USER_PASSWORD}"
+openshift_cluster_ingress_domain: "${showroom_domain}"
+openshift_api_url: "${showroom_api}"
+openshift_api_server_url: "${showroom_api}"
+openshift_cluster_console_url: "${showroom_console}"
+page-openshift_cluster_console_url: "${showroom_console}"
+login_command: "oc login -u ${_username} ${showroom_api}"
+ATTRS_EOF
+    if [[ -n "$showroom_ai_url" ]]; then
+      cat >> "$_user_tmp/attrs-${ws_names[$_i]}.yml" <<RHOAI_ATTRS
+rhoai_dashboard_url: "${showroom_ai_url}"
+page-rhoai_dashboard_url: "${showroom_ai_url}"
+RHOAI_ATTRS
+    fi
+  done
 
-###############################################################################
-# 6. Deployment + Service + Route
-###############################################################################
-printf '\nApplying workloads...\n'
+  # ── Per-user site.yml (URL differs per user) ──
+  {
+    cat <<SITE_HEAD
+site:
+  title: "${SITE_TITLE}"
+  url: "${_url}"
+SITE_HEAD
+    if [[ "$_use_home" == true ]]; then
+      printf '  start_page: home::index.adoc\n'
+    else
+      printf '  start_page: %s::index.adoc\n' "${ws_names[0]}"
+    fi
+    printf 'content:\n  sources:\n'
+    if [[ "$_use_home" == true ]]; then
+      cat <<'HOME_SRC'
+    - url: /showroom/repo
+      branches: HEAD
+      start_path: home
+HOME_SRC
+    fi
+    for _i in $(seq 0 $((ws_count - 1))); do
+      printf '    - url: /showroom/sources/%s\n' "${ws_names[$_i]}"
+      printf '      branches: HEAD\n'
+      printf '      start_path: %s\n' "${ws_paths[$_i]}"
+    done
+    cat <<'SITE_TAIL'
+ui:
+  bundle:
+    url: https://github.com/rhpds/rhdp_showroom_theme/releases/download/latest/ui-bundle.zip
+    snapshot: true
+runtime:
+  cache_dir: /tmp/.cache/antora
+output:
+  dir: /showroom/www
+SITE_TAIL
+  } > "$_user_tmp/site.yml"
 
-cat > "$showroom_tmp/workload.yaml" <<WORKLOAD
+  # ── Namespace ──
+  _existing="$(oc get namespace "$_ns" --ignore-not-found -o jsonpath='{.metadata.name}')"
+  if [[ -n "$_existing" ]]; then
+    _owner="$(oc get namespace "$_ns" \
+      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)"
+    if [[ "$_owner" != "showroom-bootstrap" ]]; then
+      showroom_warn "$_ns: namespace exists but not managed by this script — adding label."
+      oc label namespace "$_ns" app.kubernetes.io/managed-by=showroom-bootstrap --overwrite
+    fi
+  else
+    oc create namespace "$_ns"
+    oc label namespace "$_ns" app.kubernetes.io/managed-by=showroom-bootstrap
+  fi
+
+  # ── ConfigMap (common files + per-user attrs + per-user site.yml) ──
+  _cm_args=(showroom-config -n "$_ns" --dry-run=client -o yaml)
+  _cm_args+=(--from-file=modules.txt="$showroom_tmp/modules.txt")
+  _cm_args+=(--from-file=clone.sh="$showroom_tmp/clone.sh")
+  _cm_args+=(--from-file=build.sh="$showroom_tmp/build.sh")
+  _cm_args+=(--from-file=site.yml="$_user_tmp/site.yml")
+  _cm_args+=(--from-file=ui-config.yml="$showroom_tmp/ui-config.yml")
+  _cm_args+=(--from-file=traefik-static.yml="$showroom_tmp/traefik-static.yml")
+  _cm_args+=(--from-file=traefik-dynamic.yml="$showroom_tmp/traefik-dynamic.yml")
+
+  if [[ "$_use_home" == true ]]; then
+    _cm_args+=(--from-file=home-antora.yml="$showroom_tmp/home-antora.yml")
+    _cm_args+=(--from-file=home-index.adoc="$showroom_tmp/home-index.adoc")
+    _cm_args+=(--from-file=home-nav.adoc="$showroom_tmp/home-nav.adoc")
+  fi
+  for _i in $(seq 0 $((ws_count - 1))); do
+    _cm_args+=(--from-file="attrs-${ws_names[$_i]}.yml=$_user_tmp/attrs-${ws_names[$_i]}.yml")
+  done
+
+  if ! oc create configmap "${_cm_args[@]}" | oc apply -f -; then
+    showroom_warn "$_username — ConfigMap apply failed, skipping."
+    _failed_users+=("$_username"); continue
+  fi
+
+  # ── Workload (Deployment + Service + Route) ──
+  cat > "$_user_tmp/workload.yaml" <<WORKLOAD
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: showroom
-  namespace: ${showroom_ns}
+  namespace: ${_ns}
   labels: {app.kubernetes.io/managed-by: showroom-bootstrap}
 spec:
   replicas: 1
@@ -589,7 +550,7 @@ spec:
   template:
     metadata:
       labels: {app.kubernetes.io/name: showroom}
-      annotations: {showroom-bootstrap/run: "${showroom_run}"}
+      annotations: {showroom-bootstrap/run: "${_run}"}
     spec:
       automountServiceAccountToken: false
       initContainers:
@@ -612,9 +573,6 @@ spec:
           volumeMounts: *build-mounts
           resources: *build-resources
       containers:
-        # Traefik reverse proxy — pod entrypoint (port 8080)
-        # Routes: / → content, /proxy/console/ → Console, /proxy/dashboard/ → Dashboard
-        # Strips X-Frame-Options so Console/Dashboard render in nookbag iframes
         - name: proxy
           image: quay.io/rhpds/traefik:v3.7.9
           args: ["--configFile=/etc/traefik/traefik-static.yml"]
@@ -633,7 +591,6 @@ spec:
           resources:
             requests: {cpu: 5m, memory: 16Mi}
             limits: {cpu: 100m, memory: 64Mi}
-        # Showroom content — serves the built Antora HTML
         - name: content
           image: quay.io/rhpds/showroom-content:v1.4.3
           env:
@@ -669,7 +626,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: showroom
-  namespace: ${showroom_ns}
+  namespace: ${_ns}
 spec:
   selector: {app.kubernetes.io/name: showroom}
   ports: [{name: http, port: 8080, targetPort: web}]
@@ -678,53 +635,98 @@ apiVersion: route.openshift.io/v1
 kind: Route
 metadata:
   name: showroom
-  namespace: ${showroom_ns}
+  namespace: ${_ns}
   annotations:
     haproxy.router.openshift.io/timeout: 1h
     haproxy.router.openshift.io/timeout-tunnel: 1h
 spec:
-  host: "${showroom_host}"
+  host: "${_host}"
   to: {kind: Service, name: showroom}
   port: {targetPort: http}
   tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
 WORKLOAD
 
-oc apply -f "$showroom_tmp/workload.yaml"
+  if oc apply -f "$_user_tmp/workload.yaml"; then
+    _deployed_users+=("$_username")
+    showroom_success "$_username — resources applied (ns: $_ns)"
+  else
+    _failed_users+=("$_username")
+    showroom_warn "$_username — workload apply failed."
+  fi
+  echo ""
+done
 
 ###############################################################################
-# 7. Wait for rollout
+# 6. Wait for all rollouts in parallel
 ###############################################################################
-printf '\nWaiting for Showroom deployment (up to 10 min)...\n'
-if ! oc rollout status deployment/showroom -n "$showroom_ns" --timeout=600s; then
-  printf '\nDeployment did not become ready. Inspect:\n' >&2
-  printf '  oc get pods -n %s\n' "$showroom_ns" >&2
-  printf '  oc logs -n %s deployment/showroom -c clone\n' "$showroom_ns" >&2
-  printf '  oc logs -n %s deployment/showroom -c build\n' "$showroom_ns" >&2
-  printf '  oc logs -n %s deployment/showroom -c proxy\n' "$showroom_ns" >&2
-  printf '  oc logs -n %s deployment/showroom -c content\n' "$showroom_ns" >&2
-  exit 1
+if [[ ${#_deployed_users[@]} -gt 0 ]]; then
+  printf '━━━ Waiting for all rollouts (max %s parallel)... ━━━\n' "$MAX_PARALLEL"
+
+  declare -a _wait_pids=() _wait_users=() _rollout_failed=()
+
+  for _username in "${_deployed_users[@]}"; do
+    _ns="showroom-${_username}"
+    oc rollout status deployment/showroom -n "$_ns" --timeout=600s &>/dev/null &
+    _wait_pids+=($!)
+    _wait_users+=("$_username")
+
+    if [[ ${#_wait_pids[@]} -ge $MAX_PARALLEL ]]; then
+      if ! wait "${_wait_pids[0]}" 2>/dev/null; then
+        _rollout_failed+=("${_wait_users[0]}")
+      fi
+      _wait_pids=("${_wait_pids[@]:1}")
+      _wait_users=("${_wait_users[@]:1}")
+    fi
+  done
+
+  for _idx in "${!_wait_pids[@]}"; do
+    if ! wait "${_wait_pids[$_idx]}" 2>/dev/null; then
+      _rollout_failed+=("${_wait_users[$_idx]}")
+    fi
+  done
+
+  for _rf in "${_rollout_failed[@]+"${_rollout_failed[@]}"}"; do
+    _failed_users+=("$_rf")
+    showroom_warn "$_rf — rollout did not complete in time."
+  done
 fi
 
 ###############################################################################
-# 8. Summary
+# 7. Summary
 ###############################################################################
-_actual_host="$(oc get route showroom -n "$showroom_ns" -o jsonpath='{.spec.host}')"
+_ok_count=0
+for _username in "${_deployed_users[@]}"; do
+  _is_failed=false
+  for _f in "${_failed_users[@]+"${_failed_users[@]}"}"; do
+    [[ "$_f" == "$_username" ]] && _is_failed=true && break
+  done
+  [[ "$_is_failed" == true ]] || _ok_count=$((_ok_count + 1))
+done
+
 printf '\n'
 printf '══════════════════════════════════════════════════\n'
-printf ' Showroom is ready!\n'
-printf '══════════════════════════════════════════════════\n'
+printf ' Showroom deployment complete!\n'
+printf '══════════════════════════════════════════════════\n\n'
+printf '  Total users : %d\n' "${#showroom_users[@]}"
+printf '  Succeeded   : %d\n' "$_ok_count"
+[[ ${#_failed_users[@]} -eq 0 ]] || \
+  printf '  Failed      : %d — %s\n' "${#_failed_users[@]}" "${_failed_users[*]}"
 printf '\n'
-printf '  URL       : https://%s\n' "$_actual_host"
-printf '  Namespace : %s\n' "$showroom_ns"
+printf '  URLs:\n'
+for _username in "${_deployed_users[@]}"; do
+  _is_failed=false
+  for _f in "${_failed_users[@]+"${_failed_users[@]}"}"; do
+    [[ "$_f" == "$_username" ]] && _is_failed=true && break
+  done
+  [[ "$_is_failed" == true ]] && continue
+  printf '    %-12s → https://showroom-showroom-%s.%s\n' "$_username" "$_username" "$showroom_domain"
+done
+printf '\n'
 printf '  Workshops : %d\n' "$ws_count"
 for _i in $(seq 0 $((ws_count - 1))); do
   printf '    %d. %s\n' "$((_i+1))" "${ws_titles[$_i]}"
 done
 printf '\n'
 printf '  Update    : re-run this script (idempotent)\n'
-printf '  Rebuild   : oc rollout restart deployment/showroom -n %s\n' "$showroom_ns"
-printf '  Logs      : oc logs -n %s deployment/showroom -c clone\n' "$showroom_ns"
-printf '              oc logs -n %s deployment/showroom -c build\n' "$showroom_ns"
-printf '              oc logs -n %s deployment/showroom -c proxy\n' "$showroom_ns"
-printf '  Delete    : oc delete namespace %s\n' "$showroom_ns"
+printf '  Delete all: for u in %s; do oc delete ns showroom-\$u; done\n' "${showroom_users[*]}"
 printf '══════════════════════════════════════════════════\n'
