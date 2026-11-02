@@ -1629,7 +1629,7 @@ for comp in MLflowOperatorReady OGXReady AIGatewayReady KserveReady TrustyAIRead
     if [ "$STATUS" = "True" ]; then
         echo -e "  ${GREEN}[OK]${NC} ${comp}"
     elif [ "$comp" = "ModelsAsAServiceReady" ]; then
-        echo -e "  ${YELLOW}[--]${NC} ${comp} (expected -- becomes Ready after first llm-d model is deployed)"
+        echo -e "  ${YELLOW}[--]${NC} ${comp} (expected -- becomes Ready after MaaS setup: field-source-setup-maas-35.sh)"
     else
         echo -e "  ${RED}[!!]${NC} ${comp} (${REASON:-pending})"
         NOT_READY_COUNT=$((NOT_READY_COUNT + 1))

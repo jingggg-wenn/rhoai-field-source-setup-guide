@@ -1,0 +1,66 @@
+==============================================
+ RHOAI 3.5.2 Field Source -- MaaS Setup
+==============================================
+
+[INFO] === Pre-flight checks ===
+[OK]   Logged in: admin @ https://api.ocp.wbcnb.sandbox1236.opentlc.com:6443
+[INFO] Cleaning up 9 Completed/Failed pods to free pod slots...
+[OK]   Stale pods cleaned up
+[OK]   RHOAI: 3.5.2
+[OK]   RHCL operator
+[OK]   AIGateway: Managed
+[OK]   maas-default-gateway
+[OK]   Namespace: redhat-ai-gateway-infra
+
+
+[INFO] === Step 1/5: PostgreSQL database ===
+[OK]   maas-db-config secret already exists in redhat-ai-gateway-infra [SKIP]
+
+[INFO] === Step 2/5: Kuadrant + Authorino TLS (kuadrant-system) ===
+[OK]   RHCL sub-operators ready (Authorino, Limitador)
+[OK]   Kuadrant Ready in kuadrant-system
+[OK]   Authorino created in kuadrant-system
+[OK]   Limitador created in kuadrant-system
+[OK]   Authorino TLS already enabled
+[OK]   Kuadrant + Authorino TLS configuration complete
+
+[INFO] === Step 3/5: Rate limiting (Redis + EnvoyFilters) ===
+[OK]   Redis already deployed
+[OK]   Limitador already using redis-cached
+[OK]   Rate limiting configured
+
+[INFO] Restarting maas-api to pick up configuration...
+[OK]   maas-api running
+
+[INFO] === Step 4/5: Kuadrant AuthPolicy reconciliation ===
+[OK]   Gateway AuthPolicy enforced
+
+[INFO] === Step 5/5: Verification ===
+  [OK] maas-db-config in redhat-ai-gateway-infra
+  [OK] Authorino TLS enabled & ready (kuadrant-system)
+  [OK] Kuadrant operator running
+  [OK] Gateway AuthPolicy enforced
+  [OK] maas-api running
+  [OK] admin in rhods-admins group
+  [--] MaaS Tenant (expected -- created after first Subscription via Dashboard)
+  [OK] ModelsAsAServiceReady
+
+==============================================
+[OK]   MaaS setup complete!
+
+  MaaS endpoint:  https://maas.apps.ocp.wbcnb.sandbox1236.opentlc.com
+  Dashboard:      https://data-science-gateway.apps.ocp.wbcnb.sandbox1236.opentlc.com
+
+  Next steps:
+  ----------------------------------------
+  1. Deploy model:  Dashboard > Gen AI Studio > Deploy (llm-d runtime)
+  2. Register subscription + auth policy via Dashboard
+  3. Verify:
+     TOKEN=$(oc whoami -t)
+     curl -sk https://maas.apps.ocp.wbcnb.sandbox1236.opentlc.com/v1/models -H "Authorization: Bearer $TOKEN"
+
+  Known issue (RHOAI 3.5.1):
+    Non-streaming chat/completions via MaaS gateway may return empty body.
+    Caused by ext_proc (FULL_DUPLEX_STREAMED) response body processing.
+    Streaming (stream:true) works correctly -- Playground uses streaming.
+==============================================
