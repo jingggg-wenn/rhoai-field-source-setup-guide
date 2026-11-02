@@ -136,6 +136,7 @@ export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep/my-home.adoc"
 export WORKSHOPS="
 basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
+agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
 "
 curl -sL https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep/deploy-showroom.sh | bash
 ```
