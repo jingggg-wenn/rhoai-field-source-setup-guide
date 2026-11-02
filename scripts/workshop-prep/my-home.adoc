@@ -1,0 +1,28 @@
+= Red Hat OpenShift AI Hands-on Workshop
+:page-layout: home
+
+Welcome to the Red Hat OpenShift AI hands-on workshop!
+
+In this workshop you will get practical experience with model serving,
+inference API calls, and AI Agent operations on the OpenShift AI platform.
+
+== Labs
+
+[cols="1,3",options="header"]
+|===
+| Lab | Description
+
+| xref:basic-inference::index.adoc[1. Basic Inference]
+| Model serving basics — deploy a vLLM model and call the inference API
+
+| xref:agentops::index.adoc[2. AgentOps]
+| AI Agent operations — build and monitor a LangChain Agent
+|===
+
+== Before you begin
+
+* The labs are **independent** — feel free to do them in any order.
+* Use the right-side panel to access the OpenShift Console and AI Dashboard.
+* If you run into any issues, ask your instructor for help.
+
+TIP: The lab environment is automatically deleted after the workshop. Make sure to save any notes you need before you leave.
