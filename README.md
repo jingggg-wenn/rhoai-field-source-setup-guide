@@ -75,18 +75,7 @@ What it does:
 - Patches the `gpu-profile` HardwareProfile with nodeSelector (`nvidia.com/gpu.present`) and toleration (`nvidia.com/gpu:NoSchedule`) so workloads schedule onto GPU nodes
 - Uses `scheduling.type: Node` (native Kubernetes scheduling) -- does not require Kueue
 
-### 3. add-worker-node.sh (standalone)
-
-The worker node script can also be used independently outside the workshop context:
-
-```bash
-bash ../add-worker-node.sh                                   # m6a.4xlarge (default)
-bash ../add-worker-node.sh --instance-type m6a.8xlarge       # bigger instance
-bash ../add-worker-node.sh --replicas 2                      # two worker nodes
-bash ../add-worker-node.sh --dry-run                         # preview without applying
-```
-
-### 4. deploy-showroom.sh
+### 3. deploy-showroom.sh
 
 Deploy **per-user** Showroom instances for all workshop participants.
 Each user gets their own namespace (`showroom-<username>`), Route, and
