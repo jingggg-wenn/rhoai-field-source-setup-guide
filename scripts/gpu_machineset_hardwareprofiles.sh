@@ -2,13 +2,15 @@
 ###############################################################################
 # gpu_machineset_hardwareprofiles.sh
 #
-# Create a GPU MachineSet (g6.2xlarge / NVIDIA L4) and configure the
-# gpu-profile HardwareProfile with tolerations and nodeSelectors.
+# Create a GPU MachineSet (g6.2xlarge / NVIDIA L4) and create/configure the
+# gpu-profile HardwareProfile with GPU resource identifiers, tolerations,
+# and nodeSelectors. Creates the HardwareProfile if it does not exist
+# (Field Source base env only has default-profile).
 #
 # This script is idempotent -- safe to re-run at any time.
 #
 # Created: 2026-10-06
-# Last modified: 2026-10-06
+# Last modified: 2026-11-02
 #
 # Usage:
 #   bash gpu_installation.sh
@@ -189,11 +191,13 @@ fi
 echo ""
 
 ###############################################################################
-# Step 2: GPU Hardware Profile scheduling
-#   Ensures the gpu-profile HardwareProfile has the correct toleration and
-#   nodeSelector so workloads schedule onto tainted GPU worker nodes.
+# Step 2: GPU Hardware Profile
+#   Creates or patches the gpu-profile HardwareProfile with GPU resource
+#   identifiers, toleration, and nodeSelector so workloads schedule onto
+#   tainted GPU worker nodes.
+#   Reference: extracted from sandbox1809 good cluster (g6.2xlarge / NVIDIA L4).
 ###############################################################################
-info "=== Step 2: GPU Hardware Profile scheduling ==="
+info "=== Step 2: GPU Hardware Profile ==="
 
 if oc get hardwareprofile gpu-profile -n redhat-ods-applications &>/dev/null; then
     # Check if scheduling is already configured correctly
@@ -201,16 +205,15 @@ if oc get hardwareprofile gpu-profile -n redhat-ods-applications &>/dev/null; th
         -o jsonpath='{.spec.scheduling.type}' 2>/dev/null || true)
     NODE_SEL_GPU=$(oc get hardwareprofile gpu-profile -n redhat-ods-applications \
         -o jsonpath='{.spec.scheduling.node.nodeSelector.nvidia\.com/gpu\.present}' 2>/dev/null || true)
-    # Check if any toleration matches nvidia.com/gpu (not just index 0)
     TOL_KEYS=$(oc get hardwareprofile gpu-profile -n redhat-ods-applications \
         -o jsonpath='{.spec.scheduling.node.tolerations[*].key}' 2>/dev/null || true)
     HAS_GPU_TOL=false
     for k in $TOL_KEYS; do [ "$k" = "nvidia.com/gpu" ] && HAS_GPU_TOL=true; done
 
     if [ "$SCHED_TYPE" = "Node" ] && [ "$NODE_SEL_GPU" = "true" ] && [ "$HAS_GPU_TOL" = "true" ]; then
-        success "gpu-profile scheduling already configured (type=Node, toleration + nodeSelector)"
+        success "gpu-profile (L4) already configured (type=Node, toleration + nodeSelector)"
     else
-        info "Patching gpu-profile with GPU toleration and nodeSelector..."
+        info "Patching gpu-profile with GPU scheduling..."
         oc patch hardwareprofile gpu-profile -n redhat-ods-applications --type=merge -p '
 spec:
   scheduling:
@@ -223,10 +226,51 @@ spec:
         operator: Exists
         effect: NoSchedule
 '
-        success "gpu-profile patched: toleration=nvidia.com/gpu:NoSchedule, nodeSelector=nvidia.com/gpu.present"
+        success "gpu-profile (L4) patched with GPU scheduling"
     fi
 else
-    warn "gpu-profile HardwareProfile not found in redhat-ods-applications — create it via the dashboard first"
+    info "gpu-profile (L4) not found -- creating HardwareProfile..."
+    oc apply -f - <<'EOF'
+apiVersion: infrastructure.opendatahub.io/v1
+kind: HardwareProfile
+metadata:
+  name: gpu-profile
+  namespace: redhat-ods-applications
+  annotations:
+    opendatahub.io/dashboard-feature-visibility: "[]"
+    opendatahub.io/disabled: "false"
+    opendatahub.io/display-name: gpu-profile (L4)
+spec:
+  identifiers:
+  - defaultCount: "1"
+    displayName: CPU
+    identifier: cpu
+    maxCount: "8"
+    minCount: 1
+    resourceType: CPU
+  - defaultCount: 12Gi
+    displayName: Memory
+    identifier: memory
+    maxCount: 16Gi
+    minCount: 1Gi
+    resourceType: Memory
+  - defaultCount: 1
+    displayName: GPU
+    identifier: nvidia.com/gpu
+    maxCount: 4
+    minCount: 1
+    resourceType: Accelerator
+  scheduling:
+    type: Node
+    node:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+EOF
+    success "gpu-profile (L4) HardwareProfile created (CPU 1-8, Memory 1-16Gi, GPU 1-4, scheduling=Node)"
 fi
 echo ""
 
