@@ -44,6 +44,7 @@
 #   MAX_PARALLEL       Max parallel rollout waits (default: 10)
 #   HOME_INDEX_FILE    Custom home page .adoc — local path or https:// URL
 #   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
+#   SKIP_FRAME_PATCH   Set to "true" to skip Console/Dashboard Route framing patch
 #
 # Requirements: bash, oc, curl, sha256sum (or shasum), mktemp, date, tr.
 ###############################################################################
@@ -197,6 +198,72 @@ showroom_info "Logged in as: $showroom_logged_in_as"
 showroom_info "Cluster domain: $showroom_domain"
 showroom_info "Users: ${showroom_users[*]}"
 echo ""
+
+###############################################################################
+# 3b. Allow Showroom to iframe Console / AI Dashboard (RHDP-style)
+###############################################################################
+# RHDP workshop clusters inject:
+#   Content-Security-Policy: frame-ancestors 'self' https://*.apps.<domain>
+# and do not send X-Frame-Options: DENY — so Showroom can embed Console directly.
+# OpenTLC sandboxes typically block framing; patch the Routes once (idempotent).
+_patch_route_framing() {
+  local _ns="$1" _name="$2"
+  if ! oc get route "$_name" -n "$_ns" &>/dev/null; then
+    showroom_warn "Route $_ns/$_name not found — skipping framing patch."
+    return 0
+  fi
+  if oc patch route "$_name" -n "$_ns" --type=merge -p "$(cat <<PATCH_EOF
+{
+  "metadata": {
+    "annotations": {
+      "showroom-bootstrap/frame-ancestors": "https://*.${showroom_domain}"
+    }
+  },
+  "spec": {
+    "httpHeaders": {
+      "actions": {
+        "response": [
+          {
+            "name": "Content-Security-Policy",
+            "action": {
+              "type": "Set",
+              "set": {
+                "value": "frame-ancestors 'self' https://*.${showroom_domain}"
+              }
+            }
+          },
+          {
+            "name": "X-Frame-Options",
+            "action": {
+              "type": "Delete"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
+PATCH_EOF
+)" &>/dev/null; then
+    showroom_success "Framing enabled on route ${_ns}/${_name}"
+  else
+    showroom_warn "Could not patch route ${_ns}/${_name} for framing (inline Console may not work)."
+  fi
+}
+
+if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
+  showroom_info "Patching Console/Dashboard routes for iframe embedding..."
+  _patch_route_framing openshift-console console
+  if [[ -n "$showroom_ai_host" ]]; then
+    # Prefer the route we actually discovered
+    if oc get route data-science-gateway -n redhat-ods-applications &>/dev/null; then
+      _patch_route_framing redhat-ods-applications data-science-gateway
+    elif oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
+      _patch_route_framing redhat-ods-applications rhods-dashboard
+    fi
+  fi
+  echo ""
+fi
 
 ###############################################################################
 # 4. Generate common ConfigMap files (once)
@@ -395,13 +462,14 @@ UI_HEAD
   fi
 
   printf 'tabs:\n'
+  # Direct URLs (RHDP style) — works once Route framing patch is applied.
+  # Keep Traefik /proxy/* as a fallback path for EXTRA_TABS if needed.
   if [[ -n "$showroom_ai_url" ]]; then
     printf '  - name: OpenShift AI Dashboard\n'
-    printf '    url: "/proxy/dashboard/"\n'
+    printf '    url: "%s"\n' "$showroom_ai_url"
   fi
   printf '  - name: OpenShift Console\n'
   printf '    url: "%s"\n' "$showroom_console"
-  printf '    external: true\n'
 
   if [[ -n "${EXTRA_TABS:-}" ]]; then
     while IFS= read -r _tab_line; do

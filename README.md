@@ -160,20 +160,23 @@ Blank lines and `#` comments are ignored.
 | `MAX_PARALLEL`         | `10`           | Max parallel rollout waits                              |
 | `HOME_INDEX_FILE`      | *(none)*       | Custom home page `.adoc` — local path or `https://` URL |
 | `EXTRA_TABS`           | *(none)*       | Additional nookbag tabs: `name\|url\|external` per line |
+| `SKIP_FRAME_PATCH`     | *(off)*        | Skip Console/Dashboard Route framing patch              |
 
 #### How it works
 
 1. Parses `WORKSHOPS` (or `GIT_URL`) into a workshop list
 2. Discovers users from Keycloak or `WORKSHOP_USERS`
 3. Collects cluster info (domain, API URL, console URL, RHOAI dashboard URL)
-4. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik, ui-config)
-5. For each user:
+4. Patches Console/Dashboard Routes so Showroom can iframe them
+   (`Content-Security-Policy: frame-ancestors https://*.<domain>`, delete `X-Frame-Options`)
+5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik, ui-config)
+6. For each user:
    - Creates namespace `showroom-<username>`
    - Generates per-user attributes (username, password, login command)
    - Generates per-user `site.yml` (with user-specific URL)
    - Applies ConfigMap + Deployment + Service + Route
-6. Waits for all rollouts in parallel (max `MAX_PARALLEL`)
-7. Prints summary with all user URLs
+7. Waits for all rollouts in parallel (max `MAX_PARALLEL`)
+8. Prints summary with all user URLs
 
 Each Showroom pod has 3 containers:
 - **init: clone** — clones all workshop repos + generates the home component
