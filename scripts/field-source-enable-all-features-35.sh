@@ -1620,6 +1620,7 @@ echo ""
 ###############################################################################
 info "=== Step 11/11: Verification ==="
 NOT_READY_COUNT=0
+NOT_READY_ITEMS=()
 
 # DSC components
 info "DSC components:"
@@ -1633,6 +1634,7 @@ for comp in MLflowOperatorReady OGXReady AIGatewayReady KserveReady TrustyAIRead
     else
         echo -e "  ${RED}[!!]${NC} ${comp} (${REASON:-pending})"
         NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+        NOT_READY_ITEMS+=("$comp")
     fi
 done
 
@@ -1644,6 +1646,7 @@ for i in "${!OP_NAMES[@]}"; do
     else
         echo -e "  ${RED}[!!]${NC} ${OP_NAMES[$i]}"
         NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+        NOT_READY_ITEMS+=("${OP_NAMES[$i]}")
     fi
 done
 # RHCL (separate check)
@@ -1656,6 +1659,7 @@ else
         echo -e "  ${RED}[!!]${NC} RHCL (not installed)"
     fi
     NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("RHCL")
 fi
 
 echo ""
@@ -1667,12 +1671,16 @@ PERSES_STATUS=$(oc get dscinitialization default-dsci \
 if [ "${MON_STATUS:-}" = "True" ]; then
     echo -e "  ${GREEN}[OK]${NC} MonitoringStack"
 else
-    echo -e "  ${RED}[!!]${NC} MonitoringStack"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} MonitoringStack"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("MonitoringStack")
 fi
 if [ "${PERSES_STATUS:-}" = "True" ]; then
     echo -e "  ${GREEN}[OK]${NC} Perses"
 else
-    echo -e "  ${RED}[!!]${NC} Perses"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} Perses"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("Perses")
 fi
 
 echo ""
@@ -1680,7 +1688,9 @@ info "Operator CRs:"
 if oc get nodefeaturediscovery nfd-instance -n openshift-nfd &>/dev/null 2>&1; then
     echo -e "  ${GREEN}[OK]${NC} NodeFeatureDiscovery"
 else
-    echo -e "  ${RED}[!!]${NC} NodeFeatureDiscovery"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} NodeFeatureDiscovery"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("NodeFeatureDiscovery")
 fi
 CP_STATE=$(oc get clusterpolicy gpu-cluster-policy -o jsonpath='{.status.state}' 2>/dev/null || true)
 if [ "$CP_STATE" = "ready" ]; then
@@ -1688,28 +1698,36 @@ if [ "$CP_STATE" = "ready" ]; then
 elif [ -n "$CP_STATE" ]; then
     echo -e "  ${YELLOW}[..]${NC} ClusterPolicy ($CP_STATE)"
 else
-    echo -e "  ${RED}[!!]${NC} ClusterPolicy (not found)"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} ClusterPolicy (not found)"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("ClusterPolicy")
 fi
 LWS_AVAILABLE=$(oc get leaderworkersetoperator cluster -n openshift-lws-operator \
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
 if [ "$LWS_AVAILABLE" = "True" ]; then
     echo -e "  ${GREEN}[OK]${NC} LeaderWorkerSetOperator CR"
 else
-    echo -e "  ${RED}[!!]${NC} LeaderWorkerSetOperator CR"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} LeaderWorkerSetOperator CR"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("LeaderWorkerSetOperator CR")
 fi
 KUADRANT_READY=$(oc get kuadrant kuadrant -n kuadrant-system \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || true)
 if [ "$KUADRANT_READY" = "True" ]; then
     echo -e "  ${GREEN}[OK]${NC} Kuadrant CR (Ready)"
 else
-    echo -e "  ${RED}[!!]${NC} Kuadrant CR (${KUADRANT_READY:-not found})"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} Kuadrant CR (${KUADRANT_READY:-not found})"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("Kuadrant CR")
 fi
 AUTHORINO_TLS=$(oc get authorino authorino -n kuadrant-system \
     -o jsonpath='{.spec.listener.tls.enabled}' 2>/dev/null || true)
 if [ "$AUTHORINO_TLS" = "true" ]; then
     echo -e "  ${GREEN}[OK]${NC} Authorino TLS (enabled)"
 else
-    echo -e "  ${RED}[!!]${NC} Authorino TLS"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} Authorino TLS"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("Authorino TLS")
 fi
 
 echo ""
@@ -1730,13 +1748,17 @@ MLFLOW_READY=$(oc get mlflow mlflow -o jsonpath='{.status.conditions[?(@.type=="
 if [ "$MLFLOW_READY" = "True" ]; then
     echo -e "  ${GREEN}[OK]${NC} MLflow server"
 else
-    echo -e "  ${RED}[!!]${NC} MLflow server"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} MLflow server"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("MLflow server")
 fi
 EVALHUB_PHASE=$(oc get evalhub evalhub -n redhat-ods-applications -o jsonpath='{.status.phase}' 2>/dev/null || true)
 if [ "$EVALHUB_PHASE" = "Ready" ]; then
     echo -e "  ${GREEN}[OK]${NC} EvalHub"
 else
-    echo -e "  ${RED}[!!]${NC} EvalHub (${EVALHUB_PHASE:-not deployed})"; NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    echo -e "  ${RED}[!!]${NC} EvalHub (${EVALHUB_PHASE:-not deployed})"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("EvalHub")
 fi
 DS_PHASE=$(oc get checluster devspaces -n openshift-devspaces \
     -o jsonpath='{.status.chePhase}' 2>/dev/null || true)
@@ -1768,6 +1790,9 @@ if [ $NOT_READY_COUNT -eq 0 ]; then
     success "All checks passed. Total time: ${TOTAL_MIN}m${TOTAL_REMAINDER}s"
 else
     warn "${NOT_READY_COUNT} item(s) NOT READY. Total time: ${TOTAL_MIN}m${TOTAL_REMAINDER}s"
+    for item in "${NOT_READY_ITEMS[@]}"; do
+        echo -e "  ${RED}[!!]${NC} ${item}"
+    done
     echo "  Re-run this script to pick up where it left off."
 fi
 echo ""
