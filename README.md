@@ -218,15 +218,14 @@ Blank lines and `#` comments are ignored.
 | `MAX_PARALLEL`         | `10`           | Max parallel rollout waits                              |
 | `HOME_INDEX_FILE`      | *(none)*       | Custom home page `.adoc` — local path or `https://` URL |
 | `EXTRA_TABS`           | *(none)*       | Additional nookbag tabs: `name\|url\|external` per line |
-| `SKIP_FRAME_PATCH`     | *(off)*        | Skip Console/Dashboard Route framing patch              |
+| `SKIP_FRAME_PATCH`     | *(off)*        | Skip workshop ingress framing configuration              |
 
 #### How it works
 
 1. Parses `WORKSHOPS` (or `GIT_URL`) into a workshop list
 2. Discovers users from Keycloak or `WORKSHOP_USERS`
 3. Collects cluster info (domain, API URL, console URL, RHOAI dashboard URL)
-4. Patches Console/Dashboard Routes so Showroom can iframe them
-   (`Content-Security-Policy: frame-ancestors https://*.<domain>`, delete `X-Frame-Options`)
+4. Configures persistent IngressController response headers for embedding, allowing only the current Showroom origins, and verifies the actual Console response headers
 5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik)
 6. For each user:
    - Reuses namespace `<username>` (creates it if missing) and applies `opendatahub.io/dashboard=true`
@@ -276,23 +275,30 @@ No Docker image rebuild is needed — everything is driven by ConfigMap files.
 Each user gets a dedicated Showroom at:
 
 ```
-https://showroom-<username>.<cluster-domain>
+https://showroom-showroom-<username>.<cluster-domain>
 ```
 
 For example, with users `user1`–`user4` on `apps.ocp.example.com`:
 
 | User  | URL                                                     |
 | ----- | ------------------------------------------------------- |
-| user1 | `https://showroom-user1.apps.ocp.example.com`  |
-| user2 | `https://showroom-user2.apps.ocp.example.com`  |
-| user3 | `https://showroom-user3.apps.ocp.example.com`  |
-| user4 | `https://showroom-user4.apps.ocp.example.com`  |
+| user1 | `https://showroom-showroom-user1.apps.ocp.example.com`  |
+| user2 | `https://showroom-showroom-user2.apps.ocp.example.com`  |
+| user3 | `https://showroom-showroom-user3.apps.ocp.example.com`  |
+| user4 | `https://showroom-showroom-user4.apps.ocp.example.com`  |
+
+The public hostname is independent of the namespace: `user4` hosts the Showroom
+resources, while its URL remains `https://showroom-showroom-user4.<cluster-domain>`.
 
 Existing Workbenches in namespaces such as `user1` are reused. Resources in
 other namespaces, such as `showroom-user1` or `user-01`, are not moved or deleted
 automatically. Re-running these scripts deploys to `user1` and prints the new
 URLs. Existing Workbench PVC data in other namespaces must be migrated separately
 before removing any old project.
+If a Route in an old namespace still owns the public hostname, release that
+hostname before deploying the new Route. Remove only the old Showroom Route
+after verifying its namespace; deleting the shared user project would also
+remove the Workbench and its storage.
 
 ## Run Order
 
@@ -322,3 +328,11 @@ for ns in user1 user2 user3 user4; do
   oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config -n "$ns" --ignore-not-found
 done
 ```
+
+The embedding configuration follows the RHDP ingress model: it sets the default
+IngressController response header actions (CSP, X-Frame-Options, and
+Origin-Agent-Cluster) for this workshop cluster. Run with the full participant
+list so all Showroom origins are included. Browser sign-in is required; CLI
+authentication does not create a browser session. The deployment script checks
+Route admission and returns a failure if a hostname is already claimed. Legacy
+Route migration is a one-time administrative operation, not part of fresh setup.

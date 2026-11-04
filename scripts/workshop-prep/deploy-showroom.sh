@@ -45,7 +45,7 @@
 #   MAX_PARALLEL       Max parallel rollout waits (default: 10)
 #   HOME_INDEX_FILE    Custom home page .adoc — local path or https:// URL
 #   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
-#   SKIP_FRAME_PATCH   Set to "true" to skip Console/Dashboard/Workbench Route framing patch
+#   SKIP_FRAME_PATCH   Set to "true" to skip workshop ingress framing configuration
 #
 # If a Notebook exists in the user's project namespace, a Workbench tab is
 # attached using the AI Gateway or a legacy per-workbench Route.
@@ -189,8 +189,13 @@ showroom_console_host="$(oc get route console -n openshift-console --ignore-not-
   -o jsonpath='{.spec.host}' 2>/dev/null || true)"
 showroom_console="https://${showroom_console_host:-console-openshift-console.${showroom_domain}}"
 
-showroom_ai_host="$(oc get route data-science-gateway -n redhat-ods-applications --ignore-not-found \
+# Prefer the admitted Gateway-managed Route, rather than a legacy redirect alias.
+showroom_ai_host="$(oc get route data-science-gateway -n openshift-ingress --ignore-not-found \
   -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+if [[ -z "$showroom_ai_host" ]]; then
+  showroom_ai_host="$(oc get route data-science-gateway -n redhat-ods-applications --ignore-not-found \
+    -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+fi
 showroom_ai_gateway_url=""
 [[ -z "$showroom_ai_host" ]] || showroom_ai_gateway_url="https://${showroom_ai_host}"
 if [[ -z "$showroom_ai_host" ]]; then
@@ -257,18 +262,35 @@ PATCH_EOF
   fi
 }
 
+# Configure persistent ingress response headers (the RHDP console embedding model).
+# This workshop-wide policy permits only the current Showroom origins.
 if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
-  showroom_info "Patching Console/Dashboard routes for iframe embedding..."
-  _patch_route_framing openshift-console console
-  if [[ -n "$showroom_ai_host" ]]; then
-    # Prefer the route we actually discovered
-    if oc get route data-science-gateway -n redhat-ods-applications &>/dev/null; then
-      _patch_route_framing redhat-ods-applications data-science-gateway
-    elif oc get route rhods-dashboard -n redhat-ods-applications &>/dev/null; then
-      _patch_route_framing redhat-ods-applications rhods-dashboard
+  _ancestors="frame-ancestors 'self'"
+  for _u in "${showroom_users[@]}"; do
+    [[ "$_u" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || showroom_fail "Invalid project username: $_u"
+    _ancestors+=" https://showroom-showroom-${_u}.${showroom_domain}"
+  done
+  oc patch ingresscontroller default -n openshift-ingress-operator --type=merge -p "$(cat <<INGRESS_HEADERS
+{"spec":{"httpHeaders":{"actions":{"response":[
+  {"name":"X-Frame-Options","action":{"type":"Delete"}},
+  {"name":"Content-Security-Policy","action":{"type":"Set","set":{"value":"${_ancestors}"}}},
+  {"name":"Origin-Agent-Cluster","action":{"type":"Set","set":{"value":"?1"}}}
+]}}}}
+INGRESS_HEADERS
+)"
+  showroom_info "Waiting for ingress framing headers to take effect..."
+  _framing_ready=false
+  for _attempt in $(seq 1 60); do
+    _headers="$(curl -ksS --connect-timeout 5 --max-time 10 -D - -o /dev/null "$showroom_console" 2>/dev/null || true)"
+    if [[ "$_headers" == *"${_ancestors}"* ]] && \
+      ! printf '%s' "$_headers" | tr '[:upper:]' '[:lower:]' | grep -Eq '^x-frame-options:[[:space:]]*(deny|sameorigin)'; then
+      _framing_ready=true
+      break
     fi
-  fi
-  echo ""
+    sleep 3
+  done
+  [[ "$_framing_ready" == true ]] || showroom_fail "Ingress framing headers did not take effect; check router rollout."
+  showroom_success "Ingress framing headers verified on the Console response."
 fi
 
 ###############################################################################
@@ -331,6 +353,11 @@ while read -r key url ref path; do
   echo "[build] $key: rename component, inject attributes from attrs-$key.yml"
   yq -i ".name = \"$key\" | .version = \"main\" | .asciidoc.attributes *= load(\"/config/attrs-$key.yml\")" "$descriptor"
 done < /config/modules.txt
+if [ -f "$REPO/home/antora.yml" ]; then
+  # The home component uses the same per-user credentials as the workshops.
+  read -r home_key _ < /config/modules.txt
+  yq -i ".asciidoc.attributes *= load(\"/config/attrs-$home_key.yml\")" "$REPO/home/antora.yml"
+fi
 echo "[build] Running Antora..."
 antora --stacktrace "$REPO/site.yml"
 if [ -d /showroom/www ]; then
@@ -793,7 +820,13 @@ WORKLOAD
 
   if oc apply -f "$_user_tmp/workload.yaml"; then
     _deployed_users+=("$_username")
-    showroom_success "$_username — resources applied (ns: $_ns)"
+    if oc wait route/showroom -n "$_ns" \
+      --for='jsonpath={.status.ingress[0].conditions[?(@.type=="Admitted")].status}=True' --timeout=60s; then
+      showroom_success "$_username — resources applied and Route admitted (ns: $_ns)"
+    else
+      showroom_warn "$_username — Route not admitted; check for a duplicate hostname."
+      _failed_users+=("$_username")
+    fi
   else
     _failed_users+=("$_username")
     showroom_warn "$_username — workload apply failed."
@@ -877,3 +910,5 @@ printf '\n'
 printf '  Update    : re-run this script (idempotent)\n'
 printf '  Delete Showrooms: for ns in %s; do oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config -n "$ns" --ignore-not-found; done\n' "${showroom_users[*]}"
 printf '══════════════════════════════════════════════════\n'
+
+[[ ${#_failed_users[@]} -eq 0 ]] || exit 1

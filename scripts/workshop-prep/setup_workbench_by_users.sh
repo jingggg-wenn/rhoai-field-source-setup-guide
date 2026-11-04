@@ -79,7 +79,10 @@ if ! oc api-resources --api-group=kubeflow.org 2>/dev/null | grep -q notebooks; 
 fi
 
 DOMAIN="$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)"
-DASHBOARD_HOST="$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+DASHBOARD_HOST="$(oc get route data-science-gateway -n openshift-ingress -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+if [[ -z "$DASHBOARD_HOST" ]]; then
+  DASHBOARD_HOST="$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+fi
 GATEWAY_URL=""
 [[ -z "$DASHBOARD_HOST" ]] || GATEWAY_URL="https://${DASHBOARD_HOST}"
 if [[ -z "$DASHBOARD_HOST" ]]; then
