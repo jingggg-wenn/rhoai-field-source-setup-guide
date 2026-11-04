@@ -5,6 +5,7 @@
 # Deploy per-user Showroom instances for workshop participants on OpenShift.
 # Each user gets a Showroom in their OpenShift AI project (<username>),
 # alongside their Workbench, with a Route and personalized Antora attributes.
+# The public hostname remains showroom-showroom-<username>.<ingress-domain>.
 #
 # Users are discovered from Keycloak (auto) or supplied explicitly.
 #
@@ -555,7 +556,7 @@ for _username in "${showroom_users[@]}"; do
   printf '━━━ [%s] Deploying... ━━━\n' "$_username"
 
   _ns="${_username}"
-  _host="showroom-${_ns}.${showroom_domain}"
+  _host="showroom-showroom-${_username}.${showroom_domain}"
   _url="https://${_host}"
   _run="$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
   _user_tmp="$showroom_tmp/$_username"
@@ -865,7 +866,7 @@ for _username in "${_deployed_users[@]}"; do
   done
   [[ "$_is_failed" == true ]] && continue
   _ns="${_username}"
-  printf '    %-12s → https://showroom-%s.%s (project: %s)\n' "$_username" "$_ns" "$showroom_domain" "$_ns"
+  printf '    %-12s → https://showroom-showroom-%s.%s (project: %s)\n' "$_username" "$_username" "$showroom_domain" "$_ns"
 done
 printf '\n'
 printf '  Workshops : %d\n' "$ws_count"
