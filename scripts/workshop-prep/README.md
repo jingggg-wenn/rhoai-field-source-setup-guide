@@ -54,6 +54,7 @@ export HOME_INDEX_FILE="./my-home.adoc"
 export WORKSHOPS="
 basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
 agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
+evalhub|https://github.com/hyogrin/rhoai-basic-evalhub-workshop|main|content|Eval Hub Workshop
 "
 bash deploy-showroom.sh
 ```
@@ -226,6 +227,7 @@ export HOME_INDEX_FILE="$BASE/my-home.adoc"
 export WORKSHOPS="
 basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
 agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
+evalhub|https://github.com/hyogrin/rhoai-basic-evalhub-workshop|main|content|Eval Hub Workshop
 "
 curl -sL "$BASE/deploy-showroom.sh" | bash
 ```
