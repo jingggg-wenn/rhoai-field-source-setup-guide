@@ -23,7 +23,10 @@ Password:: `{password}`
 | Model serving basics — deploy a vLLM model and call the inference API
 
 | xref:agentops::index.adoc[2. AgentOps]
-| AI Agent operations — build and monitor a LangChain Agent
+| AI Agent operations — deploy and monitor a LangGraph Agent using log, metrics and trace. 
+
+| xref:evalhub::index.adoc[3. Eval Hub]
+| Evaluation Driven Development - evaluate your system’s performance and accuracy, and assess security vulnerabilities with Eval Hub.
 |===
 
 == Before you begin
