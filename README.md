@@ -212,7 +212,7 @@ Blank lines and `#` comments are ignored.
 | `CONTENT_PATH`         | *(none)*       | Content directory for single workshop                   |
 | `SITE_TITLE`           | `Workshop`     | Site title shown in browser tab and home page            |
 | `WORKSHOP_USERS`       | *(auto)*       | Comma-separated user list; if unset, discovers from Keycloak |
-| `USER_PASSWORD`        | *(auto)*       | Common password; if unset, discovers from Keycloak      |
+| `USER_PASSWORD`        | *(auto)*       | Explicit common password override; otherwise each user's Keycloak password      |
 | `KC_NAMESPACE`         | `keycloak`     | Keycloak namespace for auto-discovery                   |
 | `KC_REALM_IMPORT_NAME` | `sso`          | KeycloakRealmImport CR name                             |
 | `MAX_PARALLEL`         | `10`           | Max parallel rollout waits                              |
@@ -336,3 +336,8 @@ list so all Showroom origins are included. Browser sign-in is required; CLI
 authentication does not create a browser session. The deployment script checks
 Route admission and returns a failure if a hostname is already claimed. Legacy
 Route migration is a one-time administrative operation, not part of fresh setup.
+
+When `USER_PASSWORD` is unset, each Showroom uses the password credential from
+the KeycloakRealmImport entry with the matching username. It never uses the
+first entry (which may be the administrator). Set `USER_PASSWORD` only when you
+intend to override all participant passwords with one known common value.

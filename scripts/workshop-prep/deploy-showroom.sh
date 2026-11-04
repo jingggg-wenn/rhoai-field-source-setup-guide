@@ -39,7 +39,7 @@
 #   GIT_URL / GIT_REF / CONTENT_PATH   Single-workshop mode (backward compat)
 #   SITE_TITLE         Site title (default: "Workshop")
 #   WORKSHOP_USERS     Comma-separated user list; if unset, discovers from Keycloak
-#   USER_PASSWORD      Common password; if unset, discovers from Keycloak
+#   USER_PASSWORD      Explicit common password override; otherwise discovers each user's password
 #   KC_NAMESPACE       Keycloak namespace for auto-discovery (default: "keycloak")
 #   KC_REALM_IMPORT_NAME  KeycloakRealmImport CR name (default: "sso")
 #   MAX_PARALLEL       Max parallel rollout waits (default: 10)
@@ -162,18 +162,8 @@ fi
 
 [[ ${#showroom_users[@]} -gt 0 ]] || showroom_fail "No users found."
 
-# Discover password
-if [[ -z "${USER_PASSWORD:-}" ]]; then
-  if oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" &>/dev/null; then
-    _kc_pw=$(oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" \
-      -o jsonpath='{.spec.realm.users[0].credentials[0].value}' 2>/dev/null || true)
-    if [[ -n "$_kc_pw" ]]; then
-      USER_PASSWORD="$_kc_pw"
-      showroom_info "Auto-discovered password from Keycloak."
-    fi
-  fi
-fi
-USER_PASSWORD="${USER_PASSWORD:-Use the credentials provided by your instructor}"
+# USER_PASSWORD is an optional explicit override. Otherwise, resolve each
+# participant's own credential inside the deployment loop, never users[0].
 
 ###############################################################################
 # 3. Cluster information
@@ -609,12 +599,20 @@ for _username in "${showroom_users[@]}"; do
   _write_ui_config "$_user_tmp/ui-config.yml" "$_username" "$_workbench_url"
 
   # ── Per-user attrs ──
+  _user_password="${USER_PASSWORD:-}"
+  if [[ -z "$_user_password" ]]; then
+    _user_password="$(oc get keycloakrealmimport "$KC_REALM_IMPORT_NAME" -n "$KC_NAMESPACE" \
+      -o "jsonpath={.spec.realm.users[?(@.username==\"${_username}\")].credentials[?(@.type==\"password\")].value}")"
+  fi
+  [[ -n "$_user_password" ]] || showroom_fail "No password found for $_username; set USER_PASSWORD explicitly if needed."
+  _password_yaml="${_user_password//\\/\\\\}"
+  _password_yaml="${_password_yaml//\"/\\\"}"
   for _i in $(seq 0 $((ws_count - 1))); do
     cat > "$_user_tmp/attrs-${ws_names[$_i]}.yml" <<ATTRS_EOF
 user: "${_username}"
 username: "${_username}"
 guid: "${_username}"
-password: "${USER_PASSWORD}"
+password: "${_password_yaml}"
 openshift_cluster_ingress_domain: "${showroom_domain}"
 openshift_api_url: "${showroom_api}"
 openshift_api_server_url: "${showroom_api}"
