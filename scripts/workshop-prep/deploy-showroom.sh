@@ -44,7 +44,10 @@
 #   MAX_PARALLEL       Max parallel rollout waits (default: 10)
 #   HOME_INDEX_FILE    Custom home page .adoc — local path or https:// URL
 #   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
-#   SKIP_FRAME_PATCH   Set to "true" to skip Console/Dashboard Route framing patch
+#   SKIP_FRAME_PATCH   Set to "true" to skip Console/Dashboard/Workbench Route framing patch
+#
+# If a Notebook+Route exists in the user's project namespace (e.g. from
+# setup_workbench_by_users.sh), a Workbench tab is attached inline automatically.
 #
 # Requirements: bash, oc, curl, sha256sum (or shasum), mktemp, date, tr.
 ###############################################################################
@@ -443,9 +446,30 @@ http:
         prefixes: ["/proxy/dashboard"]
 TRAEFIK_DYNAMIC
 
-# ── ui-config.yml template (same for all users) ──
-{
-  cat <<UI_HEAD
+# Discover first Notebook+Route in the user's project namespace.
+# Prints: <notebook-name>|https://<host>
+_lookup_workbench() {
+  local _wb_ns="$1"
+  local _wb_name="" _wb_host=""
+
+  _wb_name="$(oc get notebook -n "$_wb_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+  [[ -n "$_wb_name" ]] || return 1
+
+  _wb_host="$(oc get route "$_wb_name" -n "$_wb_ns" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+  [[ -n "$_wb_host" ]] || return 1
+
+  printf '%s|https://%s' "$_wb_name" "$_wb_host"
+  return 0
+}
+
+# Write per-user ui-config.yml (optional inline Workbench tab)
+_write_ui_config() {
+  local _out="$1"
+  local _user="$2"
+  local _workbench_url="${3:-}"
+
+  {
+    cat <<UI_HEAD
 type: showroom
 default_width: 30
 persist_url_state: true
@@ -455,36 +479,43 @@ antora:
   modules:
 UI_HEAD
 
-  if [[ "$_use_home" == true ]]; then
-    printf '    - name: home/main/index\n'
-  else
-    printf '    - name: %s/main/index\n' "${ws_names[0]}"
-  fi
+    if [[ "$_use_home" == true ]]; then
+      printf '    - name: home/main/index\n'
+    else
+      printf '    - name: %s/main/index\n' "${ws_names[0]}"
+    fi
 
-  printf 'tabs:\n'
-  # Direct URLs (RHDP style) — works once Route framing patch is applied.
-  # Keep Traefik /proxy/* as a fallback path for EXTRA_TABS if needed.
-  if [[ -n "$showroom_ai_url" ]]; then
-    printf '  - name: OpenShift AI Dashboard\n'
-    printf '    url: "%s"\n' "$showroom_ai_url"
-  fi
-  printf '  - name: OpenShift Console\n'
-  printf '    url: "%s"\n' "$showroom_console"
+    printf 'tabs:\n'
+    # Direct URLs (RHDP style) — inline iframes once Route framing patch is applied.
+    if [[ -n "$showroom_ai_url" ]]; then
+      printf '  - name: OpenShift AI Dashboard\n'
+      printf '    url: "%s"\n' "$showroom_ai_url"
+    fi
+    printf '  - name: OpenShift Console\n'
+    printf '    url: "%s"\n' "$showroom_console"
 
-  if [[ -n "${EXTRA_TABS:-}" ]]; then
-    while IFS= read -r _tab_line; do
-      _tab_line="$(echo "$_tab_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -z "$_tab_line" || "$_tab_line" == \#* ]] && continue
-      IFS='|' read -r _tab_name _tab_url _tab_ext <<< "$_tab_line"
-      _tab_name="$(echo "$_tab_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      _tab_url="$(echo "$_tab_url" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      _tab_ext="$(echo "${_tab_ext:-true}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      printf '  - name: %s\n' "$_tab_name"
-      printf '    url: "%s"\n' "$_tab_url"
-      [[ "$_tab_ext" == "true" ]] && printf '    external: true\n'
-    done <<< "$EXTRA_TABS"
-  fi
-} > "$showroom_tmp/ui-config.yml"
+    # Workbench — always inline (no external: true)
+    if [[ -n "$_workbench_url" ]]; then
+      printf '  - name: Workbench\n'
+      printf '    url: "%s"\n' "$_workbench_url"
+    fi
+
+    if [[ -n "${EXTRA_TABS:-}" ]]; then
+      while IFS= read -r _tab_line; do
+        _tab_line="$(echo "$_tab_line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -z "$_tab_line" || "$_tab_line" == \#* ]] && continue
+        IFS='|' read -r _tab_name _tab_url _tab_ext <<< "$_tab_line"
+        _tab_name="$(echo "$_tab_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        _tab_url="$(echo "$_tab_url" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        _tab_ext="$(echo "${_tab_ext:-true}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        _tab_url="${_tab_url//\{user\}/${_user}}"
+        printf '  - name: %s\n' "$_tab_name"
+        printf '    url: "%s"\n' "$_tab_url"
+        [[ "$_tab_ext" == "true" ]] && printf '    external: true\n'
+      done <<< "$EXTRA_TABS"
+    fi
+  } > "$_out"
+}
 
 ###############################################################################
 # 5. Deploy per-user Showrooms
@@ -494,7 +525,7 @@ printf '════════════════════════
 printf ' Deploying Showroom for %d user(s)\n' "${#showroom_users[@]}"
 printf '══════════════════════════════════════════════════\n\n'
 
-declare -a _deployed_users=() _failed_users=()
+declare -a _deployed_users=() _failed_users=() _workbench_attached=()
 
 for _username in "${showroom_users[@]}"; do
   printf '━━━ [%s] Deploying... ━━━\n' "$_username"
@@ -505,6 +536,25 @@ for _username in "${showroom_users[@]}"; do
   _run="$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
   _user_tmp="$showroom_tmp/$_username"
   mkdir -p "$_user_tmp"
+
+  # ── Detect per-user workbench and attach as inline tab ──
+  _workbench_url=""
+  _workbench_nb=""
+  _wb_lookup=""
+  if _wb_lookup="$(_lookup_workbench "$_username")"; then
+    _workbench_nb="${_wb_lookup%%|*}"
+    _workbench_url="${_wb_lookup#*|}"
+    showroom_success "$_username — workbench found (inline): $_workbench_url"
+    _workbench_attached+=("$_username")
+    if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
+      _patch_route_framing "$_username" "$_workbench_nb"
+    fi
+  else
+    showroom_info "$_username — no workbench in ns '${_username}' (tab skipped)"
+  fi
+
+  # ── Per-user ui-config (may include inline Workbench tab) ──
+  _write_ui_config "$_user_tmp/ui-config.yml" "$_username" "$_workbench_url"
 
   # ── Per-user attrs ──
   for _i in $(seq 0 $((ws_count - 1))); do
@@ -525,6 +575,12 @@ ATTRS_EOF
 rhoai_dashboard_url: "${showroom_ai_url}"
 page-rhoai_dashboard_url: "${showroom_ai_url}"
 RHOAI_ATTRS
+    fi
+    if [[ -n "$_workbench_url" ]]; then
+      cat >> "$_user_tmp/attrs-${ws_names[$_i]}.yml" <<WB_ATTRS
+workbench_url: "${_workbench_url}"
+page-workbench_url: "${_workbench_url}"
+WB_ATTRS
     fi
   done
 
@@ -579,13 +635,13 @@ SITE_TAIL
     oc label namespace "$_ns" app.kubernetes.io/managed-by=showroom-bootstrap
   fi
 
-  # ── ConfigMap (common files + per-user attrs + per-user site.yml) ──
+  # ── ConfigMap (common files + per-user attrs/site/ui-config) ──
   _cm_args=(showroom-config -n "$_ns" --dry-run=client -o yaml)
   _cm_args+=(--from-file=modules.txt="$showroom_tmp/modules.txt")
   _cm_args+=(--from-file=clone.sh="$showroom_tmp/clone.sh")
   _cm_args+=(--from-file=build.sh="$showroom_tmp/build.sh")
   _cm_args+=(--from-file=site.yml="$_user_tmp/site.yml")
-  _cm_args+=(--from-file=ui-config.yml="$showroom_tmp/ui-config.yml")
+  _cm_args+=(--from-file=ui-config.yml="$_user_tmp/ui-config.yml")
   _cm_args+=(--from-file=traefik-static.yml="$showroom_tmp/traefik-static.yml")
   _cm_args+=(--from-file=traefik-dynamic.yml="$showroom_tmp/traefik-dynamic.yml")
 
@@ -778,6 +834,7 @@ printf ' Showroom deployment complete!\n'
 printf '══════════════════════════════════════════════════\n\n'
 printf '  Total users : %d\n' "${#showroom_users[@]}"
 printf '  Succeeded   : %d\n' "$_ok_count"
+printf '  Workbench   : %d attached (inline)\n' "${#_workbench_attached[@]}"
 [[ ${#_failed_users[@]} -eq 0 ]] || \
   printf '  Failed      : %d — %s\n' "${#_failed_users[@]}" "${_failed_users[*]}"
 printf '\n'

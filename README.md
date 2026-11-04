@@ -1,7 +1,7 @@
 # Workshop Preparation Scripts
 
 Created: 2026-10-06
-Last modified: 2026-11-02
+Last modified: 2026-11-03
 
 Scripts to prepare an OpenShift cluster for the RHOAI Basic Inference Workshop.
 Run these from a local terminal after logging in with `oc login`.
@@ -75,7 +75,45 @@ What it does:
 - Patches the `gpu-profile` HardwareProfile with nodeSelector (`nvidia.com/gpu.present`) and toleration (`nvidia.com/gpu:NoSchedule`) so workloads schedule onto GPU nodes
 - Uses `scheduling.type: Node` (native Kubernetes scheduling) -- does not require Kueue
 
-### 3. deploy-showroom.sh
+### 3. setup_workbench_by_users.sh
+
+Create a per-user OpenShift AI workbench for each workshop participant.
+Uses **Jupyter | Data Science | CPU | Python 3.12** (RHOAI 3.5).
+
+```bash
+# Auto-discover users from Keycloak (skips admin)
+bash setup_workbench_by_users.sh
+
+# Or explicit list
+export WORKSHOP_USERS="user1,user2,user3,user4"
+bash setup_workbench_by_users.sh
+```
+
+What it does (per user):
+
+1. Creates project/namespace `<username>` (dashboard-visible)
+2. Grants the user `admin` on their project
+3. Creates a PVC (`20Gi` by default)
+4. Creates a `Notebook` CR named `my-workbench` with OAuth injection
+5. Waits for the workbench Route and prints URLs
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `WORKSHOP_USERS` | *(auto)* | Comma-separated users; else Keycloak discovery |
+| `WORKBENCH_NAME` | `my-workbench` | Notebook / Route name |
+| `WORKBENCH_SIZE` | `Small` | `Tiny` / `Small` / `Medium` / `Large` |
+| `PVC_SIZE` | `20Gi` | Workbench storage size |
+| `STORAGE_CLASS` | *(default)* | PVC StorageClass override |
+| `IMAGE_STREAM` | *(auto)* | ImageStream name in `redhat-ods-applications` |
+| `IMAGE_TAG` | *(auto)* | ImageStream tag (recommended if present) |
+
+Workbench URL pattern:
+
+```
+https://my-workbench-<username>.<cluster-domain>
+```
+
+### 4. deploy-showroom.sh
 
 Deploy **per-user** Showroom instances for all workshop participants.
 Each user gets their own namespace (`showroom-<username>`), Route, and
@@ -169,11 +207,11 @@ Blank lines and `#` comments are ignored.
 3. Collects cluster info (domain, API URL, console URL, RHOAI dashboard URL)
 4. Patches Console/Dashboard Routes so Showroom can iframe them
    (`Content-Security-Policy: frame-ancestors https://*.<domain>`, delete `X-Frame-Options`)
-5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik, ui-config)
+5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik)
 6. For each user:
    - Creates namespace `showroom-<username>`
-   - Generates per-user attributes (username, password, login command)
-   - Generates per-user `site.yml` (with user-specific URL)
+   - Detects a Notebook+Route in the user's project and attaches an **inline Workbench** tab
+   - Generates per-user attributes / `site.yml` / `ui-config.yml`
    - Applies ConfigMap + Deployment + Service + Route
 7. Waits for all rollouts in parallel (max `MAX_PARALLEL`)
 8. Prints summary with all user URLs
@@ -239,8 +277,9 @@ configured at any time before model deployment exercises.
 
 ```bash
 oc login --server=https://api.<cluster-domain>:6443
-bash create_workshop_users.sh            # users + worker node
+bash create_workshop_users.sh            # users + worker node (or setup_workshop_users_rbac.sh)
 bash gpu_machineset_hardwareprofiles.sh  # GPU MachineSet + HardwareProfile
+bash setup_workbench_by_users.sh         # per-user workbenches
 bash deploy-showroom.sh                  # per-user Showrooms
 ```
 
