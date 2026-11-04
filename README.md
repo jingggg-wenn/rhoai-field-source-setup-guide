@@ -177,15 +177,13 @@ bash deploy-showroom.sh
 The script can be run directly via `curl | bash` from an OpenShift Web Terminal:
 
 ```bash
-export WORKSHOP_USERS="user1,user2,user3,user4"
-export USER_PASSWORD="openshift"
 export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep/my-home.adoc"
 export WORKSHOPS="
 basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
 agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
+evalhub|https://github.com/hyogrin/rhoai-basic-evalhub-workshop|main|content|Eval Hub Workshop
 "
-curl -sL https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep/deploy-showroom.sh | bash
 ```
 
 #### WORKSHOPS format
