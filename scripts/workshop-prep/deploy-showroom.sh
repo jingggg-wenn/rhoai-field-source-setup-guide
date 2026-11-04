@@ -3,8 +3,8 @@
 # deploy-showroom.sh
 #
 # Deploy per-user Showroom instances for workshop participants on OpenShift.
-# Each user gets their own namespace (showroom-<username>), Route, and
-# personalized Antora attributes (username, password, login command).
+# Each user gets a Showroom in their OpenShift AI project (<username>),
+# alongside their Workbench, with a Route and personalized Antora attributes.
 #
 # Users are discovered from Keycloak (auto) or supplied explicitly.
 #
@@ -530,7 +530,7 @@ declare -a _deployed_users=() _failed_users=() _workbench_attached=()
 for _username in "${showroom_users[@]}"; do
   printf '━━━ [%s] Deploying... ━━━\n' "$_username"
 
-  _ns="showroom-${_username}"
+  _ns="${_username}"
   _host="showroom-${_ns}.${showroom_domain}"
   _url="https://${_host}"
   _run="$(date -u +%Y%m%dT%H%M%SZ)-${RANDOM}"
@@ -541,16 +541,16 @@ for _username in "${showroom_users[@]}"; do
   _workbench_url=""
   _workbench_nb=""
   _wb_lookup=""
-  if _wb_lookup="$(_lookup_workbench "$_username")"; then
+  if _wb_lookup="$(_lookup_workbench "$_ns")"; then
     _workbench_nb="${_wb_lookup%%|*}"
     _workbench_url="${_wb_lookup#*|}"
     showroom_success "$_username — workbench found (inline): $_workbench_url"
     _workbench_attached+=("$_username")
     if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
-      _patch_route_framing "$_username" "$_workbench_nb"
+      _patch_route_framing "$_ns" "$_workbench_nb"
     fi
   else
-    showroom_info "$_username — no workbench in ns '${_username}' (tab skipped)"
+    showroom_info "$_username — no workbench in ns '${_ns}' (tab skipped)"
   fi
 
   # ── Per-user ui-config (may include inline Workbench tab) ──
@@ -621,19 +621,14 @@ output:
 SITE_TAIL
   } > "$_user_tmp/site.yml"
 
-  # ── Namespace ──
+  # ── Shared OpenShift AI project (also used by the user's Workbench) ──
   _existing="$(oc get namespace "$_ns" --ignore-not-found -o jsonpath='{.metadata.name}')"
   if [[ -n "$_existing" ]]; then
-    _owner="$(oc get namespace "$_ns" \
-      -o jsonpath='{.metadata.labels.app\.kubernetes\.io/managed-by}' 2>/dev/null || true)"
-    if [[ "$_owner" != "showroom-bootstrap" ]]; then
-      showroom_warn "$_ns: namespace exists but not managed by this script — adding label."
-      oc label namespace "$_ns" app.kubernetes.io/managed-by=showroom-bootstrap --overwrite
-    fi
+    showroom_info "$_ns: using existing workshop namespace."
   else
     oc create namespace "$_ns"
-    oc label namespace "$_ns" app.kubernetes.io/managed-by=showroom-bootstrap
   fi
+  oc label namespace "$_ns" opendatahub.io/dashboard=true --overwrite
 
   # ── ConfigMap (common files + per-user attrs/site/ui-config) ──
   _cm_args=(showroom-config -n "$_ns" --dry-run=client -o yaml)
@@ -790,7 +785,7 @@ if [[ ${#_deployed_users[@]} -gt 0 ]]; then
   declare -a _wait_pids=() _wait_users=() _rollout_failed=()
 
   for _username in "${_deployed_users[@]}"; do
-    _ns="showroom-${_username}"
+    _ns="${_username}"
     oc rollout status deployment/showroom -n "$_ns" --timeout=600s &>/dev/null &
     _wait_pids+=($!)
     _wait_users+=("$_username")
@@ -845,7 +840,8 @@ for _username in "${_deployed_users[@]}"; do
     [[ "$_f" == "$_username" ]] && _is_failed=true && break
   done
   [[ "$_is_failed" == true ]] && continue
-  printf '    %-12s → https://showroom-showroom-%s.%s\n' "$_username" "$_username" "$showroom_domain"
+  _ns="${_username}"
+  printf '    %-12s → https://showroom-%s.%s (project: %s)\n' "$_username" "$_ns" "$showroom_domain" "$_ns"
 done
 printf '\n'
 printf '  Workshops : %d\n' "$ws_count"
@@ -854,5 +850,5 @@ for _i in $(seq 0 $((ws_count - 1))); do
 done
 printf '\n'
 printf '  Update    : re-run this script (idempotent)\n'
-printf '  Delete all: for u in %s; do oc delete ns showroom-\$u; done\n' "${showroom_users[*]}"
+printf '  Delete Showrooms: for ns in %s; do oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config -n "$ns" --ignore-not-found; done\n' "${showroom_users[*]}"
 printf '══════════════════════════════════════════════════\n'

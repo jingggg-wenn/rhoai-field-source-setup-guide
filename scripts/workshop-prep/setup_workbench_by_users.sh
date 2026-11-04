@@ -4,7 +4,7 @@
 #
 # Create a per-user OpenShift AI workbench (Notebook) for workshop participants.
 # Discovers users from Keycloak (auto) or WORKSHOP_USERS, then for each user:
-#   1. Creates a project/namespace
+#   1. Creates an OpenShift AI project/namespace (<username>), shared with Showroom
 #   2. Creates a PVC for notebook storage
 #   3. Creates a Notebook CR (Jupyter | Data Science | CPU | Python 3.12)
 #   4. Grants the user admin on their project
@@ -206,7 +206,7 @@ ensure_project() {
     modelmesh-enabled=true \
     --overwrite >/dev/null
   oc annotate namespace "$ns" \
-    openshift.io/display-name="${user} project" \
+    openshift.io/display-name="${ns}" \
     openshift.io/description="Workshop project for ${user}" \
     --overwrite >/dev/null
   # User admin on their project
@@ -407,6 +407,7 @@ echo "=============================================="
 success "Per-user workbench setup complete."
 echo ""
 echo "  Users          : ${USERS[*]}"
+echo "  Projects       : ${USERS[*]}"
 echo "  Workbench name : $WORKBENCH_NAME"
 echo "  Image          : $IMAGE_DISPLAY_NAME"
 echo "  Size           : $WORKBENCH_SIZE (${CPU_REQ}–${CPU_LIM} CPU, ${MEM_REQ}–${MEM_LIM})"
@@ -423,5 +424,5 @@ for entry in "${URLS[@]+"${URLS[@]}"}"; do
 done
 echo ""
 echo "  Next: re-run deploy-showroom.sh with Workbench tabs (optional)"
-echo "  Delete: for u in ${USERS[*]}; do oc delete notebook $WORKBENCH_NAME -n \$u; done"
+echo "  Delete: for ns in ${USERS[*]}; do oc delete notebook $WORKBENCH_NAME -n \$ns; done"
 echo "=============================================="

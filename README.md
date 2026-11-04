@@ -1,7 +1,7 @@
 # Workshop Preparation Scripts
 
 Created: 2026-10-06
-Last modified: 2026-11-03
+Last modified: 2026-11-04
 
 Scripts to prepare an OpenShift cluster for the RHOAI Basic Inference Workshop.
 Run these from a local terminal after logging in with `oc login`.
@@ -91,11 +91,15 @@ bash setup_workbench_by_users.sh
 
 What it does (per user):
 
-1. Creates project/namespace `<username>` (dashboard-visible)
+1. Creates OpenShift AI project/namespace `<username>` (dashboard-visible, shared with Showroom)
 2. Grants the user `admin` on their project
 3. Creates a PVC (`20Gi` by default)
 4. Creates a `Notebook` CR named `my-workbench` with OAuth injection
 5. Waits for the workbench Route and prints URLs
+
+Project names match the existing Keycloak login names exactly: `user1`, `user2`,
+and so on. Authentication, project permissions, Notebook ownership, and Showroom
+all use the same username. Workshop instructions should use these project names.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -116,8 +120,11 @@ https://my-workbench-<username>.<cluster-domain>
 ### 4. deploy-showroom.sh
 
 Deploy **per-user** Showroom instances for all workshop participants.
-Each user gets their own namespace (`showroom-<username>`), Route, and
-personalized Antora attributes (username, password, login command).
+Each user gets a Showroom in their OpenShift AI project (`<username>`),
+alongside their Workbench, with a Route and personalized Antora attributes
+(username, password, login command). Use the same `WORKSHOP_USERS` list for both
+scripts so each participant's Workbench and Showroom share one namespace and
+one OpenShift AI project.
 No Helm, Docker build, or separate application needed — all logic runs
 via ConfigMap-embedded scripts using the upstream `quay.io/rhpds` images.
 
@@ -209,7 +216,7 @@ Blank lines and `#` comments are ignored.
    (`Content-Security-Policy: frame-ancestors https://*.<domain>`, delete `X-Frame-Options`)
 5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik)
 6. For each user:
-   - Creates namespace `showroom-<username>`
+   - Reuses namespace `<username>` (creates it if missing) and applies `opendatahub.io/dashboard=true`
    - Detects a Notebook+Route in the user's project and attaches an **inline Workbench** tab
    - Generates per-user attributes / `site.yml` / `ui-config.yml`
    - Applies ConfigMap + Deployment + Service + Route
@@ -246,7 +253,7 @@ Re-run the script (idempotent) or restart pods to re-clone and re-build:
 bash deploy-showroom.sh
 
 # Or restart a single user's pod
-oc rollout restart deployment/showroom -n showroom-user1
+oc rollout restart deployment/showroom -n user1
 ```
 
 No Docker image rebuild is needed — everything is driven by ConfigMap files.
@@ -256,18 +263,23 @@ No Docker image rebuild is needed — everything is driven by ConfigMap files.
 Each user gets a dedicated Showroom at:
 
 ```
-https://showroom-showroom-<username>.<cluster-domain>
+https://showroom-<username>.<cluster-domain>
 ```
 
 For example, with users `user1`–`user4` on `apps.ocp.example.com`:
 
 | User  | URL                                                     |
 | ----- | ------------------------------------------------------- |
-| user1 | `https://showroom-showroom-user1.apps.ocp.example.com`  |
-| user2 | `https://showroom-showroom-user2.apps.ocp.example.com`  |
-| user3 | `https://showroom-showroom-user3.apps.ocp.example.com`  |
-| user4 | `https://showroom-showroom-user4.apps.ocp.example.com`  |
+| user1 | `https://showroom-user1.apps.ocp.example.com`  |
+| user2 | `https://showroom-user2.apps.ocp.example.com`  |
+| user3 | `https://showroom-user3.apps.ocp.example.com`  |
+| user4 | `https://showroom-user4.apps.ocp.example.com`  |
 
+Existing Workbenches in namespaces such as `user1` are reused. Resources in
+other namespaces, such as `showroom-user1` or `user-01`, are not moved or deleted
+automatically. Re-running these scripts deploys to `user1` and prints the new
+URLs. Existing Workbench PVC data in other namespaces must be migrated separately
+before removing any old project.
 
 ## Run Order
 
@@ -292,6 +304,8 @@ Scale down worker nodes and remove Showroom to stop EC2 charges:
 oc get machinesets -n openshift-machine-api
 oc scale machineset <worker-ms-name> -n openshift-machine-api --replicas=0
 
-# Delete all per-user Showrooms
-for u in user1 user2 user3 user4; do oc delete namespace showroom-$u; done
+# Delete only Showroom resources; retain projects, Workbenches, and their storage
+for ns in user1 user2 user3 user4; do
+  oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config -n "$ns" --ignore-not-found
+done
 ```
