@@ -46,8 +46,8 @@
 #   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
 #   SKIP_FRAME_PATCH   Set to "true" to skip Console/Dashboard/Workbench Route framing patch
 #
-# If a Notebook+Route exists in the user's project namespace (e.g. from
-# setup_workbench_by_users.sh), a Workbench tab is attached inline automatically.
+# If a Notebook exists in the user's project namespace, a Workbench tab is
+# attached using the AI Gateway or a legacy per-workbench Route.
 #
 # Requirements: bash, oc, curl, sha256sum (or shasum), mktemp, date, tr.
 ###############################################################################
@@ -190,6 +190,8 @@ showroom_console="https://${showroom_console_host:-console-openshift-console.${s
 
 showroom_ai_host="$(oc get route data-science-gateway -n redhat-ods-applications --ignore-not-found \
   -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+showroom_ai_gateway_url=""
+[[ -z "$showroom_ai_host" ]] || showroom_ai_gateway_url="https://${showroom_ai_host}"
 if [[ -z "$showroom_ai_host" ]]; then
   showroom_ai_host="$(oc get route rhods-dashboard -n redhat-ods-applications --ignore-not-found \
     -o jsonpath='{.spec.host}' 2>/dev/null || true)"
@@ -446,20 +448,42 @@ http:
         prefixes: ["/proxy/dashboard"]
 TRAEFIK_DYNAMIC
 
-# Discover first Notebook+Route in the user's project namespace.
-# Prints: <notebook-name>|https://<host>
+# Resolve the first Notebook through the AI Gateway or a legacy Route.
+# Prints: <notebook-name>|<url>|<legacy-route-name>
+# The last field is empty for Gateway URLs; framing is patched on the Gateway.
 _lookup_workbench() {
   local _wb_ns="$1"
-  local _wb_name="" _wb_host=""
+  local _wb_name="" _wb_target="" _wb_host="" _wb_path=""
 
-  _wb_name="$(oc get notebook -n "$_wb_ns" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-  [[ -n "$_wb_name" ]] || return 1
+  if ! _wb_name="$(oc get notebooks.kubeflow.org -n "$_wb_ns" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')"; then
+    showroom_warn "$_wb_ns: Notebook lookup failed; see the oc error above." >&2
+    return 1
+  fi
+  _wb_name="${_wb_name%%$'\n'*}"
+  if [[ -z "$_wb_name" ]]; then
+    showroom_warn "$_wb_ns: no Notebook found." >&2
+    return 1
+  fi
 
-  _wb_host="$(oc get route "$_wb_name" -n "$_wb_ns" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
-  [[ -n "$_wb_host" ]] || return 1
+  if [[ -n "$showroom_ai_gateway_url" ]]; then
+    printf '%s|%s/notebook/%s/%s/|' "$_wb_name" "${showroom_ai_gateway_url%/}" "$_wb_ns" "$_wb_name"
+    return 0
+  fi
 
-  printf '%s|https://%s' "$_wb_name" "$_wb_host"
-  return 0
+  if ! _wb_target="$(oc get route "$_wb_name" -n "$_wb_ns" --ignore-not-found \
+    -o jsonpath='{.spec.host}{"|"}{.spec.path}')"; then
+    showroom_warn "$_wb_ns/$_wb_name: Route lookup failed; see the oc error above." >&2
+    return 1
+  fi
+  _wb_host="${_wb_target%%|*}"
+  if [[ -z "$_wb_host" ]]; then
+    showroom_warn "$_wb_ns/$_wb_name: Notebook exists, but no AI Gateway or matching Route was found." >&2
+    return 1
+  fi
+  _wb_path="${_wb_target#*|}"
+  _wb_path="${_wb_path:-/notebook/$_wb_ns/$_wb_name}"
+  printf '%s|https://%s%s/|%s' "$_wb_name" "$_wb_host" "${_wb_path%/}" "$_wb_name"
 }
 
 # Write per-user ui-config.yml (optional inline Workbench tab)
@@ -540,17 +564,17 @@ for _username in "${showroom_users[@]}"; do
   # ── Detect per-user workbench and attach as inline tab ──
   _workbench_url=""
   _workbench_nb=""
+  _workbench_route=""
   _wb_lookup=""
   if _wb_lookup="$(_lookup_workbench "$_ns")"; then
-    _workbench_nb="${_wb_lookup%%|*}"
-    _workbench_url="${_wb_lookup#*|}"
+    IFS='|' read -r _workbench_nb _workbench_url _workbench_route <<< "$_wb_lookup"
     showroom_success "$_username — workbench found (inline): $_workbench_url"
     _workbench_attached+=("$_username")
-    if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
-      _patch_route_framing "$_ns" "$_workbench_nb"
+    if [[ "${SKIP_FRAME_PATCH:-}" != "true" && -n "$_workbench_route" ]]; then
+      _patch_route_framing "$_ns" "$_workbench_route"
     fi
   else
-    showroom_info "$_username — no workbench in ns '${_ns}' (tab skipped)"
+    showroom_warn "$_username — Workbench tab skipped; see the lookup warning above."
   fi
 
   # ── Per-user ui-config (may include inline Workbench tab) ──

@@ -94,12 +94,14 @@ What it does (per user):
 1. Creates OpenShift AI project/namespace `<username>` (dashboard-visible, shared with Showroom)
 2. Grants the user `admin` on their project
 3. Creates a PVC (`20Gi` by default)
-4. Creates a `Notebook` CR named `my-workbench` with OAuth injection
-5. Waits for the workbench Route and prints URLs
+4. Creates a `Notebook` CR named `my-workbench` with `inject-auth` on Gateway-based clusters, or `inject-oauth` on legacy clusters
+5. Prints Gateway workbench URLs, or waits for legacy workbench Routes
 
 Project names match the existing Keycloak login names exactly: `user1`, `user2`,
 and so on. Authentication, project permissions, Notebook ownership, and Showroom
 all use the same username. Workshop instructions should use these project names.
+Automatic image selection matches the full Jupyter display name so Code Server
+images with the same Data Science / Python labels are not selected.
 
 | Variable | Default | Description |
 | -------- | ------- | ----------- |
@@ -111,11 +113,22 @@ all use the same username. Workshop instructions should use these project names.
 | `IMAGE_STREAM` | *(auto)* | ImageStream name in `redhat-ods-applications` |
 | `IMAGE_TAG` | *(auto)* | ImageStream tag (recommended if present) |
 
-Workbench URL pattern:
+On Gateway-based clusters, Workbench URLs use the shared AI Gateway:
 
 ```
-https://my-workbench-<username>.<cluster-domain>
+https://<data-science-gateway-host>/notebook/<username>/my-workbench/
 ```
+
+Legacy per-workbench Route URLs use:
+
+```
+https://my-workbench-<username>.<cluster-domain>/notebook/<username>/my-workbench/
+```
+
+Generating a URL does not verify Workbench readiness. Check `oc get notebooks -A`
+and the Workbench Pod status before the workshop. Existing Notebooks are preserved;
+if they still use `inject-oauth` on a Gateway-based cluster, follow the
+[OpenShift AI authentication migration procedure](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.5/html/upgrading_openshift_ai_self-managed/post-upgrade-steps-for-openshift-ai_upgrade).
 
 ### 4. deploy-showroom.sh
 
@@ -217,7 +230,7 @@ Blank lines and `#` comments are ignored.
 5. Generates common ConfigMap files once (modules.txt, clone.sh, build.sh, traefik)
 6. For each user:
    - Reuses namespace `<username>` (creates it if missing) and applies `opendatahub.io/dashboard=true`
-   - Detects a Notebook+Route in the user's project and attaches an **inline Workbench** tab
+   - Detects a Notebook in the user's project and attaches an **inline Workbench** tab using the AI Gateway, or a legacy per-workbench Route
    - Generates per-user attributes / `site.yml` / `ui-config.yml`
    - Applies ConfigMap + Deployment + Service + Route
 7. Waits for all rollouts in parallel (max `MAX_PARALLEL`)

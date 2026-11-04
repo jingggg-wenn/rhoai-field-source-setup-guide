@@ -8,6 +8,7 @@
 #   2. Creates a PVC for notebook storage
 #   3. Creates a Notebook CR (Jupyter | Data Science | CPU | Python 3.12)
 #   4. Grants the user admin on their project
+# Gateway-based clusters use inject-auth; legacy clusters use inject-oauth.
 #
 # This script is idempotent — safe to re-run at any time.
 #
@@ -78,9 +79,11 @@ if ! oc api-resources --api-group=kubeflow.org 2>/dev/null | grep -q notebooks; 
 fi
 
 DOMAIN="$(oc get ingresses.config.openshift.io cluster -o jsonpath='{.spec.domain}' 2>/dev/null || true)"
-DASHBOARD_HOST="$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+DASHBOARD_HOST="$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+GATEWAY_URL=""
+[[ -z "$DASHBOARD_HOST" ]] || GATEWAY_URL="https://${DASHBOARD_HOST}"
 if [[ -z "$DASHBOARD_HOST" ]]; then
-  DASHBOARD_HOST="$(oc get route data-science-gateway -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
+  DASHBOARD_HOST="$(oc get route rhods-dashboard -n redhat-ods-applications -o jsonpath='{.spec.host}' 2>/dev/null || true)"
 fi
 DASHBOARD_URL=""
 [[ -z "$DASHBOARD_HOST" ]] || DASHBOARD_URL="https://${DASHBOARD_HOST}"
@@ -133,12 +136,12 @@ resolve_image() {
       local disp
       disp="$(oc get imagestream "$name" -n "$ODH_NS" \
         -o jsonpath='{.metadata.annotations.opendatahub\.io/notebook-image-name}' 2>/dev/null || true)"
-      if [[ "$disp" == *"Data Science"* && "$disp" == *"Python 3.12"* ]]; then
+      if [[ "$disp" == "$IMAGE_DISPLAY_NAME" ]]; then
         is_name="$name"
         break
       fi
       # Fallback: name-based match for RHOAI 3.5 naming
-      if [[ "$name" == *datascience*cpu*py312* || "$name" == *jupyter-datascience* ]]; then
+      if [[ "$name" == "s2i-generic-data-science-notebook" || "$name" == *jupyter-datascience*cpu*py312* ]]; then
         is_name="$name"
       fi
     done < <(oc get imagestreams -n "$ODH_NS" -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
@@ -247,7 +250,12 @@ ensure_notebook() {
   local user="$1" ns="$1"
   local base_url="/notebook/${ns}/${WORKBENCH_NAME}"
   local logout_url=""
+  local auth_annotations='    notebooks.opendatahub.io/inject-auth: "true"'
   [[ -z "$DASHBOARD_URL" ]] || logout_url="${DASHBOARD_URL}/projects/${ns}?notebookLogout=${WORKBENCH_NAME}"
+  if [[ -z "$GATEWAY_URL" ]]; then
+    auth_annotations="    notebooks.opendatahub.io/inject-oauth: \"true\"
+    notebooks.opendatahub.io/oauth-logout-url: \"${logout_url}\""
+  fi
 
   if oc get notebook "$WORKBENCH_NAME" -n "$ns" &>/dev/null; then
     info "$ns: Notebook $WORKBENCH_NAME exists — leaving in place"
@@ -261,14 +269,13 @@ metadata:
   name: ${WORKBENCH_NAME}
   namespace: ${ns}
   annotations:
-    notebooks.opendatahub.io/inject-oauth: "true"
+${auth_annotations}
     opendatahub.io/image-display-name: "${IMAGE_DISPLAY_NAME}"
     openshift.io/display-name: "Workbench"
     openshift.io/description: "Workshop workbench for ${user}"
     notebooks.opendatahub.io/last-image-selection: "${LAST_IMAGE_SELECTION}"
     notebooks.opendatahub.io/last-size-selection: "${WORKBENCH_SIZE}"
     opendatahub.io/username: "${user}"
-    notebooks.opendatahub.io/oauth-logout-url: "${logout_url}"
   labels:
     app: ${WORKBENCH_NAME}
     opendatahub.io/dashboard: "true"
@@ -360,6 +367,12 @@ for USERNAME in "${USERS[@]}"; do
   fi
   if oc get notebook "$WORKBENCH_NAME" -n "$USERNAME" &>/dev/null; then
     EXISTED=$((EXISTED + 1))
+    if [[ -n "$GATEWAY_URL" ]]; then
+      _existing_auth="$(oc get notebooks.kubeflow.org "$WORKBENCH_NAME" -n "$USERNAME" \
+        -o jsonpath='{.metadata.annotations.notebooks\.opendatahub\.io/inject-auth}' 2>/dev/null || true)"
+      [[ "$_existing_auth" == "true" ]] || \
+        warn "$USERNAME/$WORKBENCH_NAME: missing inject-auth annotation; existing workbench needs authentication migration (see README)."
+    fi
   else
     if ensure_notebook "$USERNAME"; then
       CREATED=$((CREATED + 1))
@@ -371,9 +384,9 @@ done
 echo ""
 
 ###############################################################################
-# Step 4: Wait for routes (best-effort)
+# Step 4: Resolve access URLs (Gateway or legacy Route)
 ###############################################################################
-info "=== Step 4/4: Wait for workbench routes (up to 5 min each) ==="
+info "=== Step 4/4: Resolve workbench access URLs ==="
 
 declare -a URLS=()
 for USERNAME in "${USERS[@]}"; do
@@ -384,6 +397,13 @@ for USERNAME in "${USERS[@]}"; do
   done
   [[ "$skip" == true ]] && continue
 
+  if [[ -n "$GATEWAY_URL" ]]; then
+    url="${GATEWAY_URL}/notebook/${USERNAME}/${WORKBENCH_NAME}/"
+    URLS+=("${USERNAME}|${url}")
+    success "$USERNAME → $url (Gateway; readiness not checked)"
+    continue
+  fi
+
   host=""
   for _ in $(seq 1 60); do
     host="$(oc get route "$WORKBENCH_NAME" -n "$USERNAME" -o jsonpath='{.spec.host}' 2>/dev/null || true)"
@@ -391,8 +411,9 @@ for USERNAME in "${USERS[@]}"; do
     sleep 5
   done
   if [[ -n "$host" ]]; then
-    URLS+=("${USERNAME}|https://${host}")
-    success "$USERNAME → https://${host}"
+    url="https://${host}/notebook/${USERNAME}/${WORKBENCH_NAME}/"
+    URLS+=("${USERNAME}|${url}")
+    success "$USERNAME → $url"
   else
     warn "$USERNAME: route not ready yet (Notebook may still be starting)"
     URLS+=("${USERNAME}|(pending)")
