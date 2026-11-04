@@ -8,35 +8,27 @@ Each participant gets their own **Workbench** and **Showroom** (lab guide), and 
 live in one OpenShift AI project named after the user's Keycloak username
 (`user1`, `user2`, ...).
 
-You run two scripts, in this order:
+You run three scripts, in this order:
 
-| Step | Script | What it creates |
-| ---- | ------ | --------------- |
-| 1 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | A project, PVC, and Jupyter Workbench for each user |
-| 2 | [`deploy-showroom.sh`](deploy-showroom.sh) | A Showroom lab guide for each user, with Workbench, Console, and Dashboard tabs |
+| Step | Script | What it does |
+| ---- | ------ | ------------ |
+| 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to the `rhods-admins` group |
+| 2 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user |
+| 3 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide for each user, with Workbench, Console, and Dashboard tabs |
 
-Run step 1 first. `deploy-showroom.sh` looks for a Workbench in each user's project
-and adds a Workbench tab only when it finds one.
+Keep this order. Users need their permissions before the workshop starts, and
+`deploy-showroom.sh` only adds a Workbench tab when it finds a Workbench in the
+user's project.
 
 ## Prerequisites
 
 - `oc` CLI, logged in with cluster-admin privileges (`oc login ...`)
 - RHOAI 3.5 installed with the workbenches component ready
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
-  `sso` in the `keycloak` namespace), **or** an explicit user list passed in
-  `WORKSHOP_USERS`
+  `sso` in the `keycloak` namespace). Step 1 requires this. Steps 2 and 3 can
+  instead take an explicit user list in `WORKSHOP_USERS`.
 - `bash`, `curl`, and `sha256sum` or `shasum` (all present on macOS and in the
   OpenShift Web Terminal)
-
-> **Optional: grant users admin rights first.** If participants need cluster-admin
-> and RHOAI dashboard admin access, run
-> [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) before step 1.
-> It reads the users from Keycloak, grants each one `cluster-admin`, and adds them
-> all to the `rhods-admins` group. It is safe to re-run.
->
-> ```bash
-> bash setup_workshop_users_rbac.sh
-> ```
 
 ## Quick start
 
@@ -45,10 +37,13 @@ oc login --server=https://api.<cluster-domain>:6443
 
 cd scripts/workshop-prep
 
-# Step 1: per-user Workbenches (users discovered from Keycloak; admin is skipped)
+# Step 1: user permissions (cluster-admin + rhods-admins)
+bash setup_workshop_users_rbac.sh
+
+# Step 2: per-user Workbenches (users discovered from Keycloak; admin is skipped)
 bash setup_workbench_by_users.sh
 
-# Step 2: per-user Showrooms
+# Step 3: per-user Showrooms
 export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="./my-home.adoc"
 export WORKSHOPS="
@@ -60,17 +55,41 @@ bash deploy-showroom.sh
 ```
 
 To target specific users instead of everyone in Keycloak, export the **same**
-list before running both scripts:
+list before running steps 2 and 3:
 
 ```bash
 export WORKSHOP_USERS="user1,user2,user3,user4"
 ```
 
-Both scripts are idempotent. Re-run them to add users or pick up changes.
+All three scripts are idempotent. Re-run them to add users or pick up changes.
 
 ---
 
-## Step 1: `setup_workbench_by_users.sh`
+## Step 1: `setup_workshop_users_rbac.sh`
+
+Gives every workshop user the permissions they need for the labs.
+
+```bash
+bash setup_workshop_users_rbac.sh
+```
+
+It:
+
+1. Reads the users from the `KeycloakRealmImport` CR `sso` in the `keycloak` namespace
+2. Creates a `cluster-admin-<username>` ClusterRoleBinding for each user
+3. Adds each user to the `rhods-admins` group (creating the group if needed),
+   which gives them admin access in the RHOAI dashboard
+
+This script has no options. It always applies to **every** user in the
+KeycloakRealmImport, including `admin`, and ignores `WORKSHOP_USERS`. If Keycloak is
+not available, it exits with an error.
+
+> **Note:** `field-source-setup-maas-35.sh` does not add users to `rhods-admins`.
+> It relies on this script for that.
+
+---
+
+## Step 2: `setup_workbench_by_users.sh`
 
 Creates one OpenShift AI Workbench per participant, using the
 **Jupyter | Data Science | CPU | Python 3.12** image.
@@ -129,7 +148,7 @@ https://my-workbench-<username>.<cluster-domain>/notebook/<username>/my-workbenc
 
 ---
 
-## Step 2: `deploy-showroom.sh`
+## Step 3: `deploy-showroom.sh`
 
 Deploys one Showroom lab guide per participant into the same `<username>`
 project as their Workbench. Each Showroom is personalized with the user's
@@ -212,16 +231,19 @@ oc rollout restart deployment/showroom -n user1
 
 ## Running from the OpenShift Web Terminal
 
-Neither script needs local files, so both can be run with `curl | bash` from the
-OpenShift Web Terminal:
+None of the scripts need local files, so all three can be run with `curl | bash`
+from the OpenShift Web Terminal:
 
 ```bash
 BASE=https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep
 
 # Step 1
-curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+curl -sL "$BASE/setup_workshop_users_rbac.sh" | bash
 
 # Step 2
+curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+
+# Step 3
 export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="$BASE/my-home.adoc"
 export WORKSHOPS="
@@ -246,3 +268,12 @@ done
 
 To remove everything for a user, including their Workbench data, delete the
 project: `oc delete project user1`.
+
+To remove the permissions granted in step 1:
+
+```bash
+for u in user1 user2 user3 user4; do
+  oc delete clusterrolebinding "cluster-admin-$u" --ignore-not-found
+  oc adm groups remove-users rhods-admins "$u"
+done
+```
