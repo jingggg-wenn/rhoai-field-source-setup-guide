@@ -37,10 +37,11 @@
 set -euo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-info()    { echo -e "${CYAN}[INFO]${NC} $*"; }
-success() { echo -e "${GREEN}[OK]${NC}   $*"; }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
-error()   { echo -e "${RED}[ERR]${NC}  $*"; }
+# Log to stderr so command substitutions never capture ANSI / log lines into YAML values
+info()    { echo -e "${CYAN}[INFO]${NC} $*" >&2; }
+success() { echo -e "${GREEN}[OK]${NC}   $*" >&2; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
+error()   { echo -e "${RED}[ERR]${NC}  $*" >&2; }
 fail()    { error "$*"; exit 1; }
 
 KC_NAMESPACE="${KC_NAMESPACE:-keycloak}"
@@ -144,9 +145,10 @@ resolve_image() {
   fi
 
   if [[ -z "$is_name" ]]; then
+    # stdout must be ONLY the image ref (captured by caller)
     warn "Could not find ImageStream for '$IMAGE_DISPLAY_NAME' in $ODH_NS."
     warn "Falling back to registry image path."
-    echo "registry.redhat.io/rhoai/odh-workbench-jupyter-datascience-cpu-py312-rhel9:latest"
+    printf '%s\n' "registry.redhat.io/rhoai/odh-workbench-jupyter-datascience-cpu-py312-rhel9:latest"
     return 0
   fi
 
@@ -173,10 +175,13 @@ resolve_image() {
   [[ -n "$is_tag" ]] || fail "ImageStream '$is_name' has no tags."
   image="image-registry.openshift-image-registry.svc:5000/${ODH_NS}/${is_name}:${is_tag}"
   info "Using ImageStream ${is_name}:${is_tag}"
-  echo "$image"
+  printf '%s\n' "$image"
 }
 
 NOTEBOOK_IMAGE="$(resolve_image)"
+# Guard against accidental log noise in the captured image ref
+NOTEBOOK_IMAGE="$(printf '%s' "$NOTEBOOK_IMAGE" | tr -d '\000-\011\013-\037' | tail -n1)"
+[[ "$NOTEBOOK_IMAGE" == *[:/]* ]] || fail "Resolved notebook image looks invalid: '$NOTEBOOK_IMAGE'"
 success "Image: $NOTEBOOK_IMAGE"
 # last-image-selection uses imagestream:tag when possible
 LAST_IMAGE_SELECTION="${NOTEBOOK_IMAGE##*/}"
@@ -217,7 +222,7 @@ ensure_pvc() {
   fi
   local sc_line=""
   [[ -z "$STORAGE_CLASS" ]] || sc_line="  storageClassName: ${STORAGE_CLASS}"
-  oc apply -f - >/dev/null <<PVC
+  if ! oc apply -f - <<PVC; then
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -232,6 +237,9 @@ ${sc_line}
     requests:
       storage: ${PVC_SIZE}
 PVC
+    error "$ns: failed to create PVC $pvc"
+    return 1
+  fi
   success "$ns: PVC $pvc created"
 }
 
@@ -246,7 +254,7 @@ ensure_notebook() {
     return 0
   fi
 
-  oc apply -f - >/dev/null <<NB
+  if ! oc apply -f - <<NB; then
 apiVersion: kubeflow.org/v1
 kind: Notebook
 metadata:
@@ -269,7 +277,7 @@ spec:
     spec:
       containers:
         - name: ${WORKBENCH_NAME}
-          image: ${NOTEBOOK_IMAGE}
+          image: "${NOTEBOOK_IMAGE}"
           imagePullPolicy: IfNotPresent
           workingDir: /opt/app-root/src
           ports:
@@ -285,7 +293,7 @@ spec:
                 --ServerApp.base_url=${base_url}
                 --ServerApp.quit_button=False
             - name: JUPYTER_IMAGE
-              value: ${NOTEBOOK_IMAGE}
+              value: "${NOTEBOOK_IMAGE}"
           resources:
             requests:
               cpu: "${CPU_REQ}"
@@ -327,6 +335,9 @@ spec:
           emptyDir:
             medium: Memory
 NB
+    error "$ns: failed to create Notebook $WORKBENCH_NAME"
+    return 1
+  fi
   success "$ns: Notebook $WORKBENCH_NAME created"
 }
 
