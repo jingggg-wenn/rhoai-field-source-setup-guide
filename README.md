@@ -116,6 +116,7 @@ Scripts for running a multi-user workshop on the cluster, in this order:
 | Script | What it does |
 | ------ | ------------ |
 | `setup_workshop_users_rbac.sh` | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` |
+| `spin-up-workernodes.sh` | Scales the worker MachineSets for the number of users (for example, `--users 30` gives 6 workers) |
 | `setup_workbench_by_users.sh` | Creates a project and Jupyter Workbench for each user |
 | `deploy-showroom.sh` | Deploys a Showroom lab guide for each user, with Workbench, Console, and Dashboard tabs |
 
