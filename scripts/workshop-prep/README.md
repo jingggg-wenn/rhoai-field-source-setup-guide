@@ -295,16 +295,17 @@ including existing Workbenches. It never discovers users a second time, so the
 Workbench selection and `SKIP_ADMIN` discovery filter are preserved. If no users
 were provisioned successfully, tenant setup is skipped and the command fails.
 
-For each selected project it applies six RoleBindings, one Role, a job
+For each selected project it applies seven RoleBindings, two Roles, a job
 ServiceAccount, and the dedicated `evalhub-service-ca` ConfigMap. The central
 EvalHub ServiceAccount receives access to all Secrets in the project, including
 create, update, patch, and delete; the job ServiceAccount receives namespace
-`edit` access and MLflow access. Notebook and PVC specifications, MLflow workspace
+`edit` access, MLflow access, and `status-events/create` permission to report
+progress and completion. Notebook and PVC specifications, MLflow workspace
 configuration, and artifact storage settings are not changed by the tenant stage.
 
 Before applying tenant resources, it checks the shared EvalHub ServiceAccount and
 all four required TrustyAI ClusterRoles. It then verifies both ServiceAccounts'
-permissions, including MLflow authorization through SubjectAccessReviews, and
+permissions, including MLflow and status-event authorization through SubjectAccessReviews, and
 waits up to 10 seconds per project for the service CA bundle. An empty CA bundle
 is a failure. This verifies RBAC and CA injection; run the lab's setup notebook to
 confirm EvalHub and MLflow work end to end.

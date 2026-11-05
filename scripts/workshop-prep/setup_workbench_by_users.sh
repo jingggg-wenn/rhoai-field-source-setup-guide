@@ -393,11 +393,12 @@ setup_evalhub_tenants() (
     fi
   }
 
-  evalhub_check_mlflow() {
+  evalhub_check_virtual_permission() {
     local ns="$1" svc="$2" verb="$3" allowed svc_ns
+    local resource="${4:-experiments}" group="${5:-mlflow.kubeflow.org}"
     svc_ns="${svc#system:serviceaccount:}"
     svc_ns="${svc_ns%%:*}"
-    # MLflow experiments are virtual resources; query authorization directly.
+    # MLflow experiments and EvalHub status-events are virtual resources.
     allowed=$(oc create -o jsonpath='{.status.allowed}' -f - 2>/dev/null <<EOF || true
 apiVersion: authorization.k8s.io/v1
 kind: SubjectAccessReview
@@ -406,15 +407,15 @@ spec:
   groups: ["system:serviceaccounts", "system:serviceaccounts:${svc_ns}", "system:authenticated"]
   resourceAttributes:
     namespace: ${ns}
-    group: mlflow.kubeflow.org
-    resource: experiments
+    group: ${group}
+    resource: ${resource}
     verb: ${verb}
 EOF
 )
     if [[ "$allowed" == true ]]; then
-      success "$ns: ${svc##*:} can $verb MLflow experiments"
+      success "$ns: ${svc##*:} can $verb ${group}/${resource}"
     else
-      warn "$ns: ${svc##*:} cannot $verb MLflow experiments"
+      warn "$ns: ${svc##*:} cannot $verb ${group}/${resource}"
       return 1
     fi
   }
@@ -424,16 +425,17 @@ EOF
     local central_svc="system:serviceaccount:${EVALHUB_NS}:${EVALHUB_SA}"
     local job_svc="system:serviceaccount:${ns}:${JOB_SA}"
 
-    evalhub_check_mlflow "$ns" "$central_svc" create || failed=1
-    evalhub_check_mlflow "$ns" "$central_svc" get || failed=1
+    evalhub_check_virtual_permission "$ns" "$central_svc" create || failed=1
+    evalhub_check_virtual_permission "$ns" "$central_svc" get || failed=1
     evalhub_check_permission "$ns" "$central_svc" create jobs.batch || failed=1
     evalhub_check_permission "$ns" "$central_svc" create configmaps || failed=1
     evalhub_check_permission "$ns" "$central_svc" get secrets || failed=1
-    evalhub_check_mlflow "$ns" "$job_svc" create || failed=1
-    evalhub_check_mlflow "$ns" "$job_svc" get || failed=1
+    evalhub_check_virtual_permission "$ns" "$job_svc" create || failed=1
+    evalhub_check_virtual_permission "$ns" "$job_svc" get || failed=1
     evalhub_check_permission "$ns" "$job_svc" create pods || failed=1
     evalhub_check_permission "$ns" "$job_svc" get configmaps || failed=1
     evalhub_check_permission "$ns" "$job_svc" get secrets || failed=1
+    evalhub_check_virtual_permission "$ns" "$job_svc" create status-events trustyai.opendatahub.io || failed=1
 
     # Service CA injection is asynchronous. Fail if it is still empty after 10s.
     for attempt in 1 2 3 4 5; do
@@ -543,6 +545,31 @@ subjects:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
+  name: ${JOB_SA}
+  namespace: ${ns}
+---
+# Job pods: report progress and completion events to EvalHub.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ${JOB_SA}-access-role
+  namespace: ${ns}
+rules:
+- apiGroups: ["trustyai.opendatahub.io"]
+  resources: ["status-events"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ${JOB_SA}-access-rb
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ${JOB_SA}-access-role
+subjects:
+- kind: ServiceAccount
   name: ${JOB_SA}
   namespace: ${ns}
 ---
