@@ -607,7 +607,8 @@ EOF
       | grep -E '"workspaces_enabled"[[:space:]]*:[[:space:]]*true' >/dev/null \
       || fail "MLflow is not ready to provide workspace support. Rerun after MLflow is ready."
     warn "Restarting EvalHub to refresh its MLflow workspace probe. Re-register custom providers afterward if using the default in-memory SQLite database."
-    oc rollout restart deployment/evalhub -n "$EVALHUB_NS" || exit 1
+    # The operator reverts Deployment restart annotations; replace the API Pod directly.
+    oc delete pod -n "$EVALHUB_NS" -l app=eval-hub,component=api,instance=evalhub --wait=true || exit 1
     oc rollout status deployment/evalhub -n "$EVALHUB_NS" --timeout=120s || exit 1
     oc logs deployment/evalhub -c evalhub -n "$EVALHUB_NS" --request-timeout=10s \
       | grep -E '"MLflow workspace support probed".*"workspaces_enabled"[[:space:]]*:[[:space:]]*true' >/dev/null \

@@ -310,7 +310,9 @@ is a failure. This verifies RBAC and CA injection; run the lab's setup notebook 
 confirm EvalHub and MLflow work end to end.
 
 If EvalHub cached a failed MLflow workspace probe at startup, the script waits for
-MLflow, checks its server-info API, and restarts EvalHub once to refresh the probe.
+MLflow, checks its server-info API, and replaces the EvalHub API Pod once to refresh
+the probe. Direct Pod replacement avoids the Operator reverting Deployment restart
+annotations.
 Healthy EvalHub instances are left running. The default EvalHub SQLite database
 is in memory, so re-register custom providers in the setup notebook after this
 recovery restart. Tenant failures do not trigger a restart.
