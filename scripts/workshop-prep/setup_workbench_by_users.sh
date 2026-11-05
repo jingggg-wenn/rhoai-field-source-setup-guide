@@ -454,7 +454,7 @@ EOF
     fi
 
     [[ "$failed" -eq 0 ]] || return 1
-    success "Namespace '${ns}' is ready for EvalHub jobs"
+    success "Namespace '${ns}' has EvalHub RBAC and CA configured"
   }
 
   evalhub_setup_tenant() {
@@ -596,8 +596,24 @@ EOF
   done
   if [[ "$rc" -ne 0 ]]; then
     warn "EvalHub tenant setup failed for: ${tenant_failed[*]}. Applied resources are retained; correct the error and rerun."
+    exit "$rc"
   fi
-  exit "$rc"
+  # EvalHub caches a failed MLflow workspace probe until it restarts.
+  local probe_logs
+  probe_logs=$(oc logs deployment/evalhub -c evalhub -n "$EVALHUB_NS" --request-timeout=10s) || exit 1
+  if printf '%s\n' "$probe_logs" | grep -E '"MLflow workspace support probed".*"workspaces_enabled"[[:space:]]*:[[:space:]]*false' >/dev/null; then
+    oc rollout status deployment/mlflow -n "$EVALHUB_NS" --timeout=120s || exit 1
+    oc get --raw "/api/v1/namespaces/${EVALHUB_NS}/services/https:mlflow:8443/proxy/mlflow/api/3.0/mlflow/server-info" --request-timeout=10s \
+      | grep -E '"workspaces_enabled"[[:space:]]*:[[:space:]]*true' >/dev/null \
+      || fail "MLflow is not ready to provide workspace support. Rerun after MLflow is ready."
+    warn "Restarting EvalHub to refresh its MLflow workspace probe. Re-register custom providers afterward if using the default in-memory SQLite database."
+    oc rollout restart deployment/evalhub -n "$EVALHUB_NS" || exit 1
+    oc rollout status deployment/evalhub -n "$EVALHUB_NS" --timeout=120s || exit 1
+    oc logs deployment/evalhub -c evalhub -n "$EVALHUB_NS" --request-timeout=10s \
+      | grep -E '"MLflow workspace support probed".*"workspaces_enabled"[[:space:]]*:[[:space:]]*true' >/dev/null \
+      || fail "EvalHub still has not detected MLflow workspace support. Check the EvalHub startup logs."
+  fi
+  exit 0
 )
 
 ###############################################################################
