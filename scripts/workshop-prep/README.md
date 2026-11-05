@@ -48,33 +48,33 @@ Step 2 is optional.
 | ---- | ------ | ------------ | ---------------- | ---- |
 | 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` | None | Seconds |
 | 2 *(optional)* | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Adds worker nodes. Only needed if you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes) recommends. | `--users <n>`; preview first with `--dry-run` | 5–15 min |
-| 3 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min |
-| 4 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
+| 3 | [`gpu_machineset_hardwareprofiles.sh`](gpu_machineset_hardwareprofiles.sh) | Creates a GPU MachineSet (0 nodes) and the `gpu-profile` HardwareProfile that participants select to deploy models on a GPU | None. Then scale the GPU MachineSet up (see [step 3](#step-3-gpu_machineset_hardwareprofilessh)) | 1 min, plus 15–20 min per GPU node |
+| 4 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min |
+| 5 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
 
 Why this order:
 
-- **If you use step 2, run it before step 3.** Workbench pods start as soon as
-they are created. If the new nodes are not Ready yet, the first Workbenches
-crowd the existing workers and stay there, while the rest wait as Pending.
-`spin-up-workernodes.sh` waits until the new nodes are Ready, so step 3 spreads
-Workbenches across all of them.
-- **Step 4 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
+- **Infrastructure before users (steps 2 and 3).** Nodes are the slowest part.
+If you use step 2, run it before the Workbenches: Workbench pods start as soon
+as they are created, and if the new nodes are not Ready yet, the first
+Workbenches crowd the existing workers and stay there.
+`spin-up-workernodes.sh` waits until the new nodes are Ready.
+- **GPU setup (step 3) before the Workbenches.** A new GPU node takes 15–20
+minutes to become usable (EC2 boot, then the GPU Operator installs the driver).
+Creating and scaling it here lets it come up while steps 4 and 5 run. The
+`gpu-profile` HardwareProfile must exist before participants deploy models.
+- **Step 5 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
 a Workbench in the user's project.
 
 All scripts are idempotent. Re-run any of them to add users or pick up changes.
 
 To target specific users instead of everyone in Keycloak, export the **same**
-list before running steps 3 and 4. If you use step 2, pass the matching count:
+list before running steps 4 and 5. If you use step 2, pass the matching count:
 
 ```bash
 export WORKSHOP_USERS="user1,user2,user3,user4"
 bash spin-up-workernodes.sh --users 4
 ```
-
-> **SNO clusters:** [`add-worker-node.sh`](add-worker-node.sh) is for Single Node
-> OpenShift, which has no worker MachineSets. Do not use it on a Field Source
-> cluster. There it finds the existing `<infra-id>-worker-<az>` MachineSet and
-> makes no change.
 
 ## Prerequisites
 
@@ -84,10 +84,13 @@ bash spin-up-workernodes.sh --users 4
 print this cluster's API URL).
 - RHOAI 3.5 installed with the workbenches component ready
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
-`sso` in the `keycloak` namespace). Step 1 requires this. Steps 2–4 can
+`sso` in the `keycloak` namespace). Step 1 requires this. Steps 2, 4, and 5 can
 instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
-- `bash`, `curl`, and `sha256sum` or `shasum` (all present on macOS and most
-Linux distributions)
+- For GPU nodes (step 3): the NVIDIA GPU Operator and Node Feature Discovery
+installed. The Field Source base environment does not include them;
+`field-source-enable-all-features-35.sh` installs both.
+- `bash`, `curl`, `python3` (step 3), and `sha256sum` or `shasum` (all present
+on macOS and most Linux distributions)
 
 ## Sizing: how many worker nodes
 
@@ -125,11 +128,12 @@ Adjust when your workshop differs:
 | Situation | What to do |
 | --------- | ---------- |
 | Other user counts | `--users <n>` applies the same formula (for example, 15 users gives 4 workers) |
-| Workers already more than 50% reserved before step 3 (`spin-up-workernodes.sh --dry-run` prints this) | Add one more: `--workers <recommended + 1>` |
+| Workers already more than 50% reserved before step 4 (`spin-up-workernodes.sh --dry-run` prints this) | Add one more: `--workers <recommended + 1>` |
 | `WORKBENCH_SIZE=Medium` (2 CPU / 8 GiB per Workbench) | `USERS_PER_WORKER=4 bash spin-up-workernodes.sh --users <n>` |
 | You want an exact node count | `--workers <n>` (total workers, not extra) |
 
-GPU nodes for model serving are separate. See `../gpu_machineset_hardwareprofiles.sh`.
+These counts are for CPU workers only. GPU nodes for model serving are added
+separately in [step 3](#step-3-gpu_machineset_hardwareprofilessh).
 
 ---
 
@@ -205,7 +209,50 @@ for `Failed` machines. The usual cause is an AWS capacity or quota limit for
 
 ---
 
-## Step 3: `setup_workbench_by_users.sh`
+## Step 3: `gpu_machineset_hardwareprofiles.sh`
+
+Sets up GPU capacity for the model-serving labs. Run it once; it takes no
+arguments.
+
+```bash
+bash gpu_machineset_hardwareprofiles.sh
+```
+
+It:
+
+1. Creates a GPU MachineSet named `<infra-id>-worker-gpu-<az>` with **0 nodes**.
+   Each node is a `g6.2xlarge` (1 NVIDIA L4 GPU with 24 GB, 8 vCPU, 32 GiB),
+   in the same zone and subnet as an existing worker. GPU nodes are tainted
+   (`nvidia.com/gpu=True:NoSchedule`), so only GPU workloads run on them.
+2. Creates the `gpu-profile (L4)` HardwareProfile in `redhat-ods-applications`,
+   or fixes it if it already exists. Participants select it when deploying a
+   model. It allows 1–8 CPU, 1–16 GiB memory, and 1–4 GPUs, and targets nodes
+   labelled `nvidia.com/gpu.present=true` with the matching toleration.
+
+The script does not start any GPU nodes. Scale the MachineSet up yourself:
+
+```bash
+oc get machinesets -n openshift-machine-api | grep gpu        # find the name
+oc scale machineset <infra-id>-worker-gpu-<az> -n openshift-machine-api --replicas=<n>
+oc get machines -n openshift-machine-api -w                    # wait for Running
+oc get nodes -l nvidia.com/gpu.present=true                    # GPU usable when listed
+```
+
+How many GPU nodes: one per model that runs at the same time. One L4 fits one
+small LLM (about 7–8B parameters). Each `g6.2xlarge` costs about $0.98/hour on
+demand in us-east.
+
+A new node appears in `oc get nodes` after about 5–10 minutes, but is only
+usable for GPU workloads once the GPU Operator has installed the driver and
+added the `nvidia.com/gpu.present=true` label, usually 15–20 minutes in total.
+If the node joins but never gets that label, check that the GPU Operator is
+installed (see [Prerequisites](#prerequisites)).
+
+The script is idempotent. `spin-up-workernodes.sh` ignores the GPU MachineSet.
+
+---
+
+## Step 4: `setup_workbench_by_users.sh`
 
 Creates one OpenShift AI Workbench per participant, using the
 **Jupyter | Data Science | CPU | Python 3.12** image.
@@ -273,7 +320,7 @@ or delete and re-create the Workbench.
 
 ---
 
-## Step 4: `deploy-showroom.sh`
+## Step 5: `deploy-showroom.sh`
 
 Deploys one Showroom lab guide per participant into the same `<username>`
 project as their Workbench. Each Showroom is personalized with the user's
@@ -371,10 +418,13 @@ curl -sL "$BASE/setup_workshop_users_rbac.sh" | bash
 # Step 2 (optional)
 curl -sL "$BASE/spin-up-workernodes.sh" | bash -s -- --users 30
 
-# Step 3
-curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+# Step 3 (then scale the GPU MachineSet, see step 3 above)
+curl -sL "$BASE/gpu_machineset_hardwareprofiles.sh" | bash
 
 # Step 4
+curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+
+# Step 5
 export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="$BASE/my-home.adoc"
 export WORKSHOPS="
@@ -393,6 +443,13 @@ to stop the extra EC2 charges. `spin-up-workernodes.sh` prints the exact
 of its run. Do this after removing the Workbenches and Showrooms, so their pods
 are not moved onto the remaining nodes. If you are deleting the whole RHDP
 environment, skip this.
+
+**Scale GPU nodes to 0** if you are keeping the environment. GPU nodes are the
+most expensive part of the cluster:
+
+```bash
+oc scale machineset <infra-id>-worker-gpu-<az> -n openshift-machine-api --replicas=0
+```
 
 **Remove only the Showroom resources.** This keeps each user's project,
 Workbench, and storage:

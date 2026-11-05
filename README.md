@@ -51,8 +51,7 @@ scripts/
 ├── WORKSHOP-SETUP.md / WORKSHOP-SETUP_KR.md   Step-by-step setup guide (EN / KR)
 ├── field-source-enable-all-features-35.sh     Script 1: enable all features
 ├── field-source-setup-maas-35.sh              Script 2: MaaS infrastructure
-├── gpu_machineset_hardwareprofiles.sh         Optional: GPU MachineSet + HardwareProfile
-└── workshop-prep/                             Optional: multi-user workshop setup
+└── workshop-prep/                             Multi-user workshop setup, including GPU nodes
 output-log/                                    Sample output from both setup scripts
 images/                                        Screenshots used in the guides
 ```
@@ -97,18 +96,6 @@ Configures the MaaS infrastructure. Run it after Script 1 completes.
 | 4 | Kuadrant AuthPolicy reconciliation |
 | 5 | Verification |
 
-### Optional: `gpu_machineset_hardwareprofiles.sh`
-
-Field Source clusters have no GPU nodes. This script creates a GPU MachineSet
-(`g6.2xlarge` / NVIDIA L4) with `replicas=0`, and creates the `gpu-profile`
-HardwareProfile with the matching nodeSelector and toleration. Scale the MachineSet up
-when you need GPUs. Requires `python3`.
-
-```bash
-bash scripts/gpu_machineset_hardwareprofiles.sh
-oc scale machineset <gpu-machineset-name> -n openshift-machine-api --replicas=1
-```
-
 ### Optional: workshop prep (`scripts/workshop-prep/`)
 
 Scripts for running a multi-user workshop on the cluster, in this order:
@@ -116,7 +103,8 @@ Scripts for running a multi-user workshop on the cluster, in this order:
 | Script | What it does |
 | ------ | ------------ |
 | `setup_workshop_users_rbac.sh` | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` |
-| `spin-up-workernodes.sh` | Scales the worker MachineSets for the number of users (for example, `--users 30` gives 6 workers) |
+| `spin-up-workernodes.sh` | Optional. Scales the worker MachineSets for the number of users (for example, `--users 30` gives 6 workers) |
+| `gpu_machineset_hardwareprofiles.sh` | Creates a GPU MachineSet (`g6.2xlarge` / NVIDIA L4, 0 nodes) and the `gpu-profile` HardwareProfile. Scale the MachineSet up for GPU nodes. |
 | `setup_workbench_by_users.sh` | Creates a project and Jupyter Workbench for each user |
 | `deploy-showroom.sh` | Deploys a Showroom lab guide for each user, with Workbench, Console, and Dashboard tabs |
 
