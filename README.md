@@ -1,69 +1,28 @@
 # RHOAI 3.5 Field Source Setup Guide
 
 Created: 04 Nov 2026
-Last modified: 04 Nov 2026
+Last modified: 05 Nov 2026
 
-Scripts that enable all Red Hat OpenShift AI 3.5 features on a **Field Source** cluster
-(the RHDP sandbox base environment with Keycloak users, cert-manager pre-installed, and
-no GPU operators or Kueue). This includes Models-as-a-Service (MaaS), observability, and
-evaluation tooling, plus optional scripts to prepare the cluster for a multi-user workshop.
+Scripts that set up Red Hat OpenShift AI 3.5 on a **Field Source** cluster and
+prepare it for a hands-on workshop. Tested on RHOAI 3.5.2 and OpenShift 4.22.
 
-- **Repository:** [https://github.com/jingggg-wenn/rhoai-field-source-setup-guide](https://github.com/jingggg-wenn/rhoai-field-source-setup-guide)
-- **Tested on:** RHOAI 3.5.2 on OpenShift 4.22
+> **Unofficial.** Not maintained or endorsed by Red Hat. Tested on RHOAI 3.5.2
+> only. Use at your own discretion.
 
----
+## Where to start
 
-## Disclaimer
+| You are | Go to | What it covers |
+| ------- | ----- | -------------- |
+| **Administrator** preparing a workshop | [`scripts/workshop-prep/README.md`](scripts/workshop-prep/README.md) | Ordering the environment, sizing, and setting up per-user Workbenches, GPU nodes, and Showroom lab guides |
+| **User / participant** setting up a cluster | [`scripts/WORKSHOP-SETUP.md`](scripts/WORKSHOP-SETUP.md) ([한국어](scripts/WORKSHOP-SETUP_KR.md)) | Opening the Web Terminal and running the two setup scripts below |
 
-This is an **unofficial** setup script, not maintained or endorsed by Red Hat. It is tested
-on a specific version (currently RHOAI 3.5.2) and may not work on other versions without
-modification. Use at your own discretion.
+## The two setup scripts
 
----
-
-## Quick start
-
-Follow the step-by-step guide. It covers logging in, installing the Web Terminal, and
-running the two setup scripts:
-
-- English: [`scripts/WORKSHOP-SETUP.md`](scripts/WORKSHOP-SETUP.md)
-- 한국어: [`scripts/WORKSHOP-SETUP_KR.md`](scripts/WORKSHOP-SETUP_KR.md)
-
-In short, from the OpenShift Web Terminal:
-
-```bash
-# 1. Enable all RHOAI 3.5 features
-curl -sL https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/main/scripts/field-source-enable-all-features-35.sh | bash
-
-# 2. Set up MaaS (after step 1 completes)
-curl -sL https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/main/scripts/field-source-setup-maas-35.sh | bash
-```
-
-All scripts are **idempotent**, so they are safe to re-run if interrupted or if operators
-are still installing in the background.
-
----
-
-## Repository layout
-
-```
-scripts/
-├── WORKSHOP-SETUP.md / WORKSHOP-SETUP_KR.md   Step-by-step setup guide (EN / KR)
-├── field-source-enable-all-features-35.sh     Script 1: enable all features
-├── field-source-setup-maas-35.sh              Script 2: MaaS infrastructure
-└── workshop-prep/                             Multi-user workshop setup, including GPU nodes
-output-log/                                    Sample output from both setup scripts
-images/                                        Screenshots used in the guides
-```
-
----
-
-## What gets configured
+`WORKSHOP-SETUP.md` runs these in order. Both are safe to re-run.
 
 ### Script 1: `field-source-enable-all-features-35.sh`
 
-Installs supporting operators first, then enables all RHOAI 3.5 DSC components and
-dashboard features.
+Installs supporting operators, then enables RHOAI 3.5 components and dashboard features.
 
 | Step | What it does |
 | ---- | ------------ |
@@ -72,21 +31,17 @@ dashboard features.
 | 3a | Install operators: NFD, NVIDIA GPU Operator, cert-manager, LWS, OpenTelemetry, Tempo, Cluster Observability, Dev Spaces |
 | 3b | Wait for operators and create their CRs (NodeFeatureDiscovery, ClusterPolicy, LWS, UIPlugins, CheCluster) |
 | 4 | DSCI patch (monitoring configuration) |
-| 5 | DSC patch (activate all components) |
+| 5 | DSC patch (activate components) |
 | 6 | MLflow server, demo project, and EvalHub |
 | 7 | MaaS Gateway CRs |
 | 8 | Dashboard menu flags and accelerator metrics rules |
-| 9 | Install RHCL, Kuadrant, and Authorino TLS |
+| 9 | Install RHCL, Kuadrant, and Authorino TLS (may briefly disconnect the Web Terminal; re-run if it does) |
 | 10 | Dashboard restart |
 | 11 | Verification (flags anything not ready) |
 
-> **Note:** Step 9 (RHCL / Service Mesh) can briefly disconnect the Web Terminal.
-> Operators keep installing in the background. Reconnect and re-run the same command;
-> completed steps are skipped.
-
 ### Script 2: `field-source-setup-maas-35.sh`
 
-Configures the MaaS infrastructure. Run it after Script 1 completes.
+Sets up Models-as-a-Service (MaaS). Run after Script 1 completes.
 
 | Step | What it does |
 | ---- | ------------ |
@@ -96,23 +51,4 @@ Configures the MaaS infrastructure. Run it after Script 1 completes.
 | 4 | Kuadrant AuthPolicy reconciliation |
 | 5 | Verification |
 
-### Optional: workshop prep (`scripts/workshop-prep/`)
-
-Scripts for running a multi-user workshop on the cluster, in this order:
-
-| Script | What it does |
-| ------ | ------------ |
-| `setup_workshop_users_rbac.sh` | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` |
-| `spin-up-workernodes.sh` | Optional. Scales the worker MachineSets for the number of users (for example, `--users 30` gives 6 workers) |
-| `gpu_machineset_hardwareprofiles.sh` | Creates a GPU MachineSet (`g6.2xlarge` / NVIDIA L4, 0 nodes) and the `gpu-profile` HardwareProfile. Scale the MachineSet up for GPU nodes. |
-| `setup_workbench_by_users.sh` | Creates a project and Jupyter Workbench for each user |
-| `deploy-showroom.sh` | Deploys a Showroom lab guide for each user, with Workbench, Console, and Dashboard tabs |
-
-See [`scripts/workshop-prep/README.md`](scripts/workshop-prep/README.md) for usage and options.
-
----
-
-## Sample output
-
-Full output from successful runs of both setup scripts is in
-[`output-log/`](output-log/). Compare against it if a run looks different.
+Sample output from both scripts is in [`output-log/`](output-log/).

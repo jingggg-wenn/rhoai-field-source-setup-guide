@@ -8,7 +8,7 @@
 #
 # Optional: only needed if the environment was ordered with fewer workers than
 # the sizing guide recommends. A multinode Field Source environment has 3 worker
-# MachineSets (one per AZ). For SNO clusters, use add-worker-node.sh instead.
+# MachineSets (one per AZ). Single Node OpenShift (SNO) clusters are not supported.
 #
 # Sizing (total worker nodes, including the existing ones):
 #   target = PLATFORM_WORKERS + ceil(users / USERS_PER_WORKER)
@@ -110,7 +110,7 @@ while IFS='|' read -r name role replicas itype; do
     MS_NAMES+=("$name"); MS_REPLICAS+=("${replicas:-0}"); MS_TYPES+=("$itype")
 done < <(oc get machinesets -n "$MAPI_NS" -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.spec.template.metadata.labels.machine\.openshift\.io/cluster-api-machine-role}{"|"}{.spec.replicas}{"|"}{.spec.template.spec.providerSpec.value.instanceType}{"\n"}{end}' 2>/dev/null || true)
 
-[[ ${#MS_NAMES[@]} -gt 0 ]] || fail "No worker MachineSets found in $MAPI_NS. For SNO clusters, use add-worker-node.sh."
+[[ ${#MS_NAMES[@]} -gt 0 ]] || fail "No worker MachineSets found in $MAPI_NS. This script needs a multinode cluster (SNO is not supported)."
 
 CURRENT=0
 for i in "${!MS_NAMES[@]}"; do
@@ -238,7 +238,7 @@ for i in "${!MS_NAMES[@]}"; do
     printf '    %-45s replicas=%s\n' "${MS_NAMES[$i]}" "${NEW_REPLICAS[$i]}"
 done
 echo ""
-echo "  Next: bash setup_workbench_by_users.sh"
+echo "  Next: bash gpu_machineset_hardwareprofiles.sh   (then setup_workbench_by_users.sh)"
 echo ""
 echo "  After the workshop, scale back to the original $CURRENT worker(s):"
 for i in "${!MS_NAMES[@]}"; do
