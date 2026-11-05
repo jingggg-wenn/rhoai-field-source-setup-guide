@@ -49,7 +49,7 @@ Step 2 is optional.
 | 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` | None | Seconds |
 | 2 *(optional)* | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Adds worker nodes. Only needed if you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes) recommends. | `--users <n>`; preview first with `--dry-run` | 5–15 min |
 | 3 | [`gpu_machineset_hardwareprofiles.sh`](gpu_machineset_hardwareprofiles.sh) | Creates a GPU MachineSet (0 nodes) and the `gpu-profile` HardwareProfile that participants select to deploy models on a GPU | None. Then scale the GPU MachineSet up (see [step 3](#step-3-gpu_machineset_hardwareprofilessh)) | 1 min, plus 15–20 min per GPU node |
-| 4 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min |
+| 4 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user and configures EvalHub tenants | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min, plus tenant verification |
 | 5 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
 
 Why this order:
@@ -63,6 +63,10 @@ Workbenches crowd the existing workers and stay there.
 minutes to become usable (EC2 boot, then the GPU Operator installs the driver).
 Creating and scaling it here lets it come up while steps 4 and 5 run. The
 `gpu-profile` HardwareProfile must exist before participants deploy models.
+- **EvalHub tenants after project creation (step 4).** Tenant RBAC is applied
+automatically after the Workbench creation loop and before URL lookup. Deploy the shared EvalHub first with
+`field-source-enable-all-features-35.sh`; tenant setup requires existing projects
+and the TrustyAI ClusterRoles. Workbench pods do not need to be Running yet.
 - **Step 5 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
 a Workbench in the user's project.
 
@@ -83,6 +87,8 @@ bash spin-up-workernodes.sh --users 4
 (it should print your admin user) and `oc whoami --show-server` (it should
 print this cluster's API URL).
 - RHOAI 3.5 installed with the workbenches component ready
+- Shared EvalHub and MLflow deployed with `field-source-enable-all-features-35.sh`
+before step 4, which configures EvalHub tenants by default
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
 `sso` in the `keycloak` namespace). Step 1 requires this. Steps 2, 4, and 5 can
 instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
@@ -279,6 +285,38 @@ For each user it:
 Existing Workbenches are left unchanged. To change the size or image of an
 existing one, delete it (`oc delete notebook my-workbench -n <user>`) and re-run.
 
+### EvalHub tenant setup
+
+Deploy EvalHub and MLflow first using `field-source-enable-all-features-35.sh`.
+The regular `bash setup_workbench_by_users.sh` command configures EvalHub tenants
+automatically after the Workbench creation loop and before URL lookup.
+It uses only users whose project, PVC, and Notebook were provisioned successfully,
+including existing Workbenches. It never discovers users a second time, so the
+Workbench selection and `SKIP_ADMIN` discovery filter are preserved. If no users
+were provisioned successfully, tenant setup is skipped and the command fails.
+
+For each selected project it applies six RoleBindings, one Role, a job
+ServiceAccount, and the dedicated `evalhub-service-ca` ConfigMap. The central
+EvalHub ServiceAccount receives access to all Secrets in the project, including
+create, update, patch, and delete; the job ServiceAccount receives namespace
+`edit` access and MLflow access. Notebook and PVC specifications, MLflow workspace
+configuration, and artifact storage settings are not changed by the tenant stage.
+
+Before applying tenant resources, it checks the shared EvalHub ServiceAccount and
+all four required TrustyAI ClusterRoles. It then verifies both ServiceAccounts'
+permissions, including MLflow authorization through SubjectAccessReviews, and
+waits up to 10 seconds per project for the service CA bundle. An empty CA bundle
+is a failure. This verifies RBAC and CA injection; run the lab's setup notebook to
+confirm EvalHub and MLflow work end to end.
+
+Tenant setup runs in a separate subshell, with no helper file or download needed,
+so the regular `curl | bash` command also configures EvalHub tenants. On any
+Workbench or tenant error, the script prints the available Workbench URLs and summary before
+returning a nonzero exit status. Tenant failures are reported separately from
+Workbench creation failures. Resources already applied are retained; correct the
+error and rerun the same command. Set `ENABLE_EVALHUB_TENANTS=false` only when
+intentionally skipping tenant setup; then no EvalHub resources are read or applied.
+
 ### Options
 
 | Variable | Default | Description |
@@ -293,6 +331,8 @@ existing one, delete it (`oc delete notebook my-workbench -n <user>`) and re-run
 | `STORAGE_CLASS` | *(cluster default)* | PVC StorageClass override |
 | `IMAGE_STREAM` | *(auto)* | ImageStream name in `redhat-ods-applications` |
 | `IMAGE_TAG` | *(auto)* | ImageStream tag |
+| `ENABLE_EVALHUB_TENANTS` | `true` | Configures and verifies EvalHub tenants after Workbench provisioning; set to `false` to skip |
+| `EVALHUB_NS` | `redhat-ods-applications` | Shared EvalHub namespace, used only when tenant setup is enabled |
 
 ### Check the result
 

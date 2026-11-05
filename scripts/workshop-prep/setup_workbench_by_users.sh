@@ -9,6 +9,7 @@
 #   3. Creates a Notebook CR (Jupyter | Data Science | CPU | Python 3.12)
 #   4. Grants the user admin on their project
 # Gateway-based clusters use inject-auth; legacy clusters use inject-oauth.
+# Enables provisioned projects as EvalHub tenants before URL lookup.
 #
 # This script is idempotent — safe to re-run at any time.
 #
@@ -29,11 +30,14 @@
 #   IMAGE_STREAM         Override ImageStream name in redhat-ods-applications
 #   IMAGE_TAG            Override ImageStream tag (default: recommended / latest)
 #   SKIP_ADMIN           Comma-separated usernames to skip (default: admin)
+#   ENABLE_EVALHUB_TENANTS  Configure EvalHub tenants after provisioning (default: true)
+#   EVALHUB_NS           Shared EvalHub namespace (default: redhat-ods-applications)
 #
 # Prerequisites:
 #   - oc login with cluster-admin
 #   - OpenShift AI / workbenches component ready
 #   - Users already provisioned (Keycloak or htpasswd)
+#   - Shared EvalHub and TrustyAI ClusterRoles ready (unless tenant setup is disabled)
 ###############################################################################
 set -euo pipefail
 
@@ -54,6 +58,11 @@ STORAGE_CLASS="${STORAGE_CLASS:-}"
 IMAGE_DISPLAY_NAME="Jupyter | Data Science | CPU | Python 3.12"
 SKIP_ADMIN="${SKIP_ADMIN:-admin}"
 ODH_NS="redhat-ods-applications"
+ENABLE_EVALHUB_TENANTS="${ENABLE_EVALHUB_TENANTS:-true}"
+case "$ENABLE_EVALHUB_TENANTS" in
+  true|false) ;;
+  *) fail "ENABLE_EVALHUB_TENANTS must be true or false." ;;
+esac
 
 ###############################################################################
 # Size presets (match dashboard Small-ish defaults)
@@ -352,6 +361,246 @@ NB
 }
 
 ###############################################################################
+# EvalHub tenant setup, isolated from the Workbench shell.
+# Keep this inline so curl | bash does not need local helper files or downloads.
+###############################################################################
+setup_evalhub_tenants() (
+  local EVALHUB_NS="${EVALHUB_NS:-redhat-ods-applications}"
+  local EVALHUB_SA="evalhub-service" JOB_SA="evalhub-${EVALHUB_NS}-job"
+  local role ns rc=0
+  local tenant_failed=()
+
+  # Only the caller's provisioned users are accepted; never rediscover users.
+  [[ $# -gt 0 ]] || fail "No provisioned projects supplied for EvalHub tenant setup."
+  oc get sa "$EVALHUB_SA" -n "$EVALHUB_NS" >/dev/null 2>&1 || \
+    fail "ServiceAccount ${EVALHUB_SA} not found in ${EVALHUB_NS}. Deploy EvalHub first or set EVALHUB_NS."
+  for role in \
+    trustyai-service-operator-evalhub-mlflow-access \
+    trustyai-service-operator-evalhub-jobs-writer \
+    trustyai-service-operator-evalhub-job-config \
+    trustyai-service-operator-evalhub-mlflow-jobs-access; do
+    oc get clusterrole "$role" >/dev/null 2>&1 || \
+      fail "Required ClusterRole ${role} is unavailable. Complete the TrustyAI/EvalHub installation first."
+  done
+
+  evalhub_check_permission() {
+    local ns="$1" svc="$2" verb="$3" resource="$4"
+    if oc auth can-i "$verb" "$resource" -n "$ns" --as="$svc" >/dev/null 2>&1; then
+      success "$ns: ${svc##*:} can $verb $resource"
+    else
+      warn "$ns: ${svc##*:} cannot $verb $resource"
+      return 1
+    fi
+  }
+
+  evalhub_check_mlflow() {
+    local ns="$1" svc="$2" verb="$3" allowed svc_ns
+    svc_ns="${svc#system:serviceaccount:}"
+    svc_ns="${svc_ns%%:*}"
+    # MLflow experiments are virtual resources; query authorization directly.
+    allowed=$(oc create -o jsonpath='{.status.allowed}' -f - 2>/dev/null <<EOF || true
+apiVersion: authorization.k8s.io/v1
+kind: SubjectAccessReview
+spec:
+  user: ${svc}
+  groups: ["system:serviceaccounts", "system:serviceaccounts:${svc_ns}", "system:authenticated"]
+  resourceAttributes:
+    namespace: ${ns}
+    group: mlflow.kubeflow.org
+    resource: experiments
+    verb: ${verb}
+EOF
+)
+    if [[ "$allowed" == true ]]; then
+      success "$ns: ${svc##*:} can $verb MLflow experiments"
+    else
+      warn "$ns: ${svc##*:} cannot $verb MLflow experiments"
+      return 1
+    fi
+  }
+
+  evalhub_verify_tenant() {
+    local ns="$1" failed=0 attempt ca_bundle=""
+    local central_svc="system:serviceaccount:${EVALHUB_NS}:${EVALHUB_SA}"
+    local job_svc="system:serviceaccount:${ns}:${JOB_SA}"
+
+    evalhub_check_mlflow "$ns" "$central_svc" create || failed=1
+    evalhub_check_mlflow "$ns" "$central_svc" get || failed=1
+    evalhub_check_permission "$ns" "$central_svc" create jobs.batch || failed=1
+    evalhub_check_permission "$ns" "$central_svc" create configmaps || failed=1
+    evalhub_check_permission "$ns" "$central_svc" get secrets || failed=1
+    evalhub_check_mlflow "$ns" "$job_svc" create || failed=1
+    evalhub_check_mlflow "$ns" "$job_svc" get || failed=1
+    evalhub_check_permission "$ns" "$job_svc" create pods || failed=1
+    evalhub_check_permission "$ns" "$job_svc" get configmaps || failed=1
+    evalhub_check_permission "$ns" "$job_svc" get secrets || failed=1
+
+    # Service CA injection is asynchronous. Fail if it is still empty after 10s.
+    for attempt in 1 2 3 4 5; do
+      ca_bundle=$(oc get configmap evalhub-service-ca -n "$ns" \
+        -o jsonpath='{.data.service-ca\.crt}' 2>/dev/null || true)
+      [[ -z "$ca_bundle" ]] || break
+      sleep 2
+    done
+    if [[ -z "$ca_bundle" ]]; then
+      ca_bundle=$(oc get configmap evalhub-service-ca -n "$ns" \
+        -o jsonpath='{.data.service-ca\.crt}' 2>/dev/null || true)
+    fi
+    if [[ -n "$ca_bundle" ]]; then
+      success "$ns: evalhub-service-ca populated"
+    else
+      warn "$ns: evalhub-service-ca is empty after waiting for injection. Rerun when the service-ca operator is ready."
+      failed=1
+    fi
+
+    [[ "$failed" -eq 0 ]] || return 1
+    success "Namespace '${ns}' is ready for EvalHub jobs"
+  }
+
+  evalhub_setup_tenant() {
+    local ns="$1"
+    if [[ ${#ns} -gt 63 || ! "$ns" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || "$ns" == "$EVALHUB_NS" ]]; then
+      warn "Invalid participant namespace for EvalHub: ${ns}"
+      return 1
+    fi
+    oc get namespace "$ns" >/dev/null 2>&1 || {
+      warn "Participant namespace ${ns} is unavailable for EvalHub tenant setup."
+      return 1
+    }
+    info "Configuring EvalHub tenant RBAC in '${ns}'..."
+    oc apply -f - >/dev/null <<EOF || return 1
+# EvalHub service: create MLflow experiments in this namespace's workspace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-mlflow-access
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-access
+subjects:
+- kind: ServiceAccount
+  name: ${EVALHUB_SA}
+  namespace: ${EVALHUB_NS}
+---
+# EvalHub service: create and delete evaluation Jobs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-jobs-writer
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-jobs-writer
+subjects:
+- kind: ServiceAccount
+  name: ${EVALHUB_SA}
+  namespace: ${EVALHUB_NS}
+---
+# EvalHub service: manage per-job ConfigMaps.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-central-job-config
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-job-config
+subjects:
+- kind: ServiceAccount
+  name: ${EVALHUB_SA}
+  namespace: ${EVALHUB_NS}
+---
+# EvalHub service: manage evaluation job credentials in this namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: evalhub-secret-access
+  namespace: ${ns}
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-secret-access
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: evalhub-secret-access
+subjects:
+- kind: ServiceAccount
+  name: ${EVALHUB_SA}
+  namespace: ${EVALHUB_NS}
+---
+# Identity used by evaluation job pods in this namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${JOB_SA}
+  namespace: ${ns}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-job-edit
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: edit
+subjects:
+- kind: ServiceAccount
+  name: ${JOB_SA}
+  namespace: ${ns}
+---
+# Job pods: log to MLflow experiments in this namespace's workspace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: evalhub-job-mlflow-access
+  namespace: ${ns}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trustyai-service-operator-evalhub-mlflow-jobs-access
+subjects:
+- kind: ServiceAccount
+  name: ${JOB_SA}
+  namespace: ${ns}
+---
+# Service CA bundle so job pods can verify EvalHub/MLflow HTTPS endpoints.
+# OpenShift's service-ca operator fills in service-ca.crt automatically.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: evalhub-service-ca
+  namespace: ${ns}
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true"
+EOF
+    evalhub_verify_tenant "$ns"
+  }
+
+  for ns in "$@"; do
+    if ! evalhub_setup_tenant "$ns"; then
+      tenant_failed+=("$ns")
+      rc=1
+    fi
+  done
+  if [[ "$rc" -ne 0 ]]; then
+    warn "EvalHub tenant setup failed for: ${tenant_failed[*]}. Applied resources are retained; correct the error and rerun."
+  fi
+  exit "$rc"
+)
+
+###############################################################################
 # Step 3: Create workbenches
 ###############################################################################
 info "=== Step 3/4: Create per-user workbenches ==="
@@ -359,6 +608,7 @@ info "=== Step 3/4: Create per-user workbenches ==="
 CREATED=0
 EXISTED=0
 FAILED=()
+PROVISIONED_USERS=()
 
 for USERNAME in "${USERS[@]}"; do
   printf '\n━━━ [%s] ━━━\n' "$USERNAME"
@@ -383,8 +633,30 @@ for USERNAME in "${USERS[@]}"; do
       FAILED+=("$USERNAME"); continue
     fi
   fi
+  PROVISIONED_USERS+=("$USERNAME")
 done
 echo ""
+
+###############################################################################
+# Configure EvalHub only after all participant projects exist.
+###############################################################################
+EVALHUB_TENANT_STATUS="disabled"
+EVALHUB_TENANT_FAILED=0
+if [[ "$ENABLE_EVALHUB_TENANTS" == true ]]; then
+  info "=== Configure EvalHub tenants ==="
+  if [[ ${#PROVISIONED_USERS[@]} -eq 0 ]]; then
+    EVALHUB_TENANT_STATUS="failed (no provisioned projects)"
+    EVALHUB_TENANT_FAILED=1
+    warn "Skipping EvalHub tenant setup: no Workbench projects were provisioned successfully."
+  elif setup_evalhub_tenants "${PROVISIONED_USERS[@]}"; then
+    EVALHUB_TENANT_STATUS="ready (${#PROVISIONED_USERS[@]} namespace(s))"
+  else
+    EVALHUB_TENANT_STATUS="failed (see tenant errors above)"
+    EVALHUB_TENANT_FAILED=1
+    warn "EvalHub tenant setup failed. Continuing to Workbench URLs and summary."
+  fi
+  echo ""
+fi
 
 ###############################################################################
 # Step 4: Resolve access URLs (Gateway or legacy Route)
@@ -439,6 +711,7 @@ echo "  PVC            : $PVC_SIZE"
 echo "  Created        : $CREATED"
 echo "  Already existed: $EXISTED"
 [[ ${#FAILED[@]} -eq 0 ]] || echo "  Failed         : ${FAILED[*]}"
+echo "  EvalHub tenants: $EVALHUB_TENANT_STATUS"
 echo ""
 echo "  URLs:"
 for entry in "${URLS[@]+"${URLS[@]}"}"; do
@@ -450,3 +723,8 @@ echo ""
 echo "  Next: re-run deploy-showroom.sh with Workbench tabs (optional)"
 echo "  Delete: for ns in ${USERS[*]}; do oc delete notebook $WORKBENCH_NAME -n \$ns; done"
 echo "=============================================="
+
+# Report setup errors after printing the Workbench URLs.
+if [[ "$ENABLE_EVALHUB_TENANTS" == true ]]; then
+  [[ "$EVALHUB_TENANT_FAILED" -eq 0 && ${#FAILED[@]} -eq 0 ]] || exit 1
+fi
