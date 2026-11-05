@@ -10,7 +10,14 @@
 
 워크숍 강사가 제공한 자격 증명을 사용합니다. OpenShift 콘솔에 로그인하고 클러스터에 접근할 수 있는지 확인합니다.
 
-## 2단계: Web Terminal 설치
+## 2단계: Web Terminal 열기
+
+먼저 Web Terminal이 이미 설치되어 있는지 확인합니다. OpenShift 콘솔 우측 상단에 **>_** 아이콘이 있는지 확인하세요.
+
+- **>_ 아이콘이 있는 경우:** Web Terminal이 이미 설치되어 있습니다. **>_** 아이콘을 클릭하여 터미널 세션을 열고 [3단계](#3단계-모든-기능-활성화)로 이동합니다.
+- **>_ 아이콘이 없는 경우:** 아래 설명에 따라 Web Terminal을 설치한 후 엽니다.
+
+### Web Terminal 설치 (>_ 아이콘이 없는 경우에만)
 
 OpenShift 콘솔에서:
 
@@ -19,11 +26,11 @@ OpenShift 콘솔에서:
 
 ![Web Terminal Operator - Software Catalog](../images/img-web-terminal-operator.png)
 
-3. 기본 설정으로 설치
+3. 기본 설정으로 설치. 타일에 이미 **Installed**가 표시되어 있다면 설치를 건너뛰고 콘솔 페이지를 새로고침하여 **>_** 아이콘이 나타나는지 확인합니다.
 
 ![Web Terminal 설치](../images/img-install-web-terminal.png)
 
-4. 설치 완료 후 콘솔 우측 상단의 **>_** 아이콘을 클릭하여 터미널 세션 열기
+4. 설치 완료 후 콘솔 페이지를 새로고침하고 우측 상단의 **>_** 아이콘을 클릭하여 터미널 세션 열기
 
 ![Web Terminal 열기](../images/img-initiate-cli.png)
 

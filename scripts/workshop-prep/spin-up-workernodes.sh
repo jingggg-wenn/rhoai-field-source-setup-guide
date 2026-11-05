@@ -6,8 +6,9 @@
 # by scaling the EXISTING worker MachineSets. New nodes are spread across
 # availability zones (the MachineSet with the fewest replicas is scaled first).
 #
-# The Field Source base environment ships with 3 worker MachineSets (one per AZ)
-# and 2 running workers. For SNO clusters, use add-worker-node.sh instead.
+# Optional: only needed if the environment was ordered with fewer workers than
+# the sizing guide recommends. A multinode Field Source environment has 3 worker
+# MachineSets (one per AZ). For SNO clusters, use add-worker-node.sh instead.
 #
 # Sizing (total worker nodes, including the existing ones):
 #   target = PLATFORM_WORKERS + ceil(users / USERS_PER_WORKER)
@@ -239,7 +240,7 @@ done
 echo ""
 echo "  Next: bash setup_workbench_by_users.sh"
 echo ""
-echo "  After the workshop, scale back to the base environment (2 workers):"
+echo "  After the workshop, scale back to the original $CURRENT worker(s):"
 for i in "${!MS_NAMES[@]}"; do
     printf '    oc scale machineset %s -n %s --replicas=%s\n' "${MS_NAMES[$i]}" "$MAPI_NS" "${MS_REPLICAS[$i]}"
 done

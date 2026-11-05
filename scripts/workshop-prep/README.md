@@ -8,38 +8,68 @@ hands-on workshop. Each participant gets their own **Workbench** and **Showroom*
 (lab guide), and both live in one OpenShift AI project named after the user's
 Keycloak username (`user1`, `user2`, ...).
 
-Run these **after** the cluster setup scripts (`field-source-enable-all-features-35.sh`
-and `field-source-setup-maas-35.sh`) have completed.
-
 > **Run these scripts from your own terminal, already logged in to the cluster.**
 > Log in with `oc login` as a cluster-admin before you start; the scripts do not
 > log in for you and stop if `oc` is not logged in. Do not use the OpenShift Web
-> Terminal: `spin-up-workernodes.sh` can wait up to 15 minutes, and
+> Terminal: the optional `spin-up-workernodes.sh` can wait up to 15 minutes, and
 > `deploy-showroom.sh` changes the cluster's ingress settings, either of which can
 > end a Web Terminal session part-way through.
 
+## Step 0: Order the environment
+
+Order the Field Source base environment from the
+[Red Hat Demo Platform (RHDP)](https://demo.redhat.com) with these settings: **Order Field Sourced Content - OpenShift Base**
+
+![Field Source order form](../../images/img-env-provision.png)
+
+| Field                          | Value                                                           | Notes                                                                       |
+| ------------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Cloud Provider                 | `aws`                                                           |                                                                             |
+| cluster_size                   | `multinode`                                                     | Not SNO. The workshop scripts expect worker MachineSets.                    |
+| OpenShift Version              | `4.22`                                                          |                                                                             |
+| OpenShift Worker count         | `5`                                                             | Size this for your user count. See [Sizing](#sizing-how-many-worker-nodes). |
+| OpenShift Worker instance type | `m5a.4xlarge`                                                   | 16 vCPU, 64 GiB. The sizing guide assumes this type.                        |
+| Enable OPEN Environment?       | unchecked                                                       |                                                                             |
+| Select Base Workloads          | **OpenShift AI** checked; Ansible Automation Platform unchecked |                                                                             |
+| Create users on cluster?       | checked, `30`                                                   | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.      |
+
+Set the worker count here, when you order. That is simpler than adding nodes
+later. If you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes)
+recommends, use the optional step 2 to add more.
+
+When the environment is ready, run the workshop prep scripts below, in order.
+
 ## Run order
 
-Run the four scripts in this order:
+Run the scripts in this order, from this folder (`cd scripts/workshop-prep`).
+Step 2 is optional.
 
 | Step | Script | What it does | Arguments to set | Time |
 | ---- | ------ | ------------ | ---------------- | ---- |
 | 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` | None | Seconds |
-| 2 | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Scales the worker MachineSets so the cluster has room for every user | `--users <n>` (see [Sizing](#sizing-how-many-worker-nodes)); preview first with `--dry-run` | 5–15 min |
+| 2 *(optional)* | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Adds worker nodes. Only needed if you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes) recommends. | `--users <n>`; preview first with `--dry-run` | 5–15 min |
 | 3 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min |
 | 4 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
 
 Why this order:
 
-- **Step 2 before step 3.** Workbench pods start as soon as they are created.
-  If the new nodes are not Ready yet, the first Workbenches crowd the existing
-  workers and stay there, while the rest wait as Pending.
-  `spin-up-workernodes.sh` waits until the new nodes are Ready, so step 3 spreads
-  Workbenches across all of them.
+- **If you use step 2, run it before step 3.** Workbench pods start as soon as
+they are created. If the new nodes are not Ready yet, the first Workbenches
+crowd the existing workers and stay there, while the rest wait as Pending.
+`spin-up-workernodes.sh` waits until the new nodes are Ready, so step 3 spreads
+Workbenches across all of them.
 - **Step 4 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
-  a Workbench in the user's project.
+a Workbench in the user's project.
 
 All scripts are idempotent. Re-run any of them to add users or pick up changes.
+
+To target specific users instead of everyone in Keycloak, export the **same**
+list before running steps 3 and 4. If you use step 2, pass the matching count:
+
+```bash
+export WORKSHOP_USERS="user1,user2,user3,user4"
+bash spin-up-workernodes.sh --users 4
+```
 
 > **SNO clusters:** [`add-worker-node.sh`](add-worker-node.sh) is for Single Node
 > OpenShift, which has no worker MachineSets. Do not use it on a Field Source
@@ -50,28 +80,31 @@ All scripts are idempotent. Re-run any of them to add users or pick up changes.
 
 - A terminal on your own machine (macOS or Linux), with the `oc` CLI installed
 - Already logged in to the cluster as a cluster-admin. Check with `oc whoami`
-  (it should print your admin user) and `oc whoami --show-server` (it should
-  print this cluster's API URL).
+(it should print your admin user) and `oc whoami --show-server` (it should
+print this cluster's API URL).
 - RHOAI 3.5 installed with the workbenches component ready
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
-  `sso` in the `keycloak` namespace). Step 1 requires this. Steps 2–4 can
-  instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
+`sso` in the `keycloak` namespace). Step 1 requires this. Steps 2–4 can
+instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
 - `bash`, `curl`, and `sha256sum` or `shasum` (all present on macOS and most
-  Linux distributions)
+Linux distributions)
 
 ## Sizing: how many worker nodes
 
-The Field Source base environment has **2 worker nodes** (`m5a.4xlarge`: 16 vCPU,
-64 GiB each), spread over 3 worker MachineSets, one per availability zone. These
-2 workers already run the RHOAI platform, so add capacity before a workshop.
+Use this table to choose **OpenShift Worker count** when you order (step 0).
+The counts are total workers, including the ones that run the RHOAI platform.
 
-| Users | Workbenches reserve | Total workers | Added to base | Command | Approx. extra cost |
-| ----- | ------------------- | ------------- | ------------- | ------- | ------------------ |
-| 10 | 10 CPU, 40 GiB | **3** | +1 | `bash spin-up-workernodes.sh --users 10` | ~$0.69/hour |
-| 20 | 20 CPU, 80 GiB | **4** | +2 | `bash spin-up-workernodes.sh --users 20` | ~$1.38/hour |
-| 30 | 30 CPU, 120 GiB | **6** | +4 | `bash spin-up-workernodes.sh --users 30` | ~$2.75/hour |
+| Users | Workbenches reserve | Workers to order | If already running, add with |
+| ----- | ------------------- | ---------------- | ---------------------------- |
+| 10 | 10 CPU, 40 GiB | **3** | `bash spin-up-workernodes.sh --users 10` |
+| 20 | 20 CPU, 80 GiB | **4** | `bash spin-up-workernodes.sh --users 20` |
+| 30 | 30 CPU, 120 GiB | **6** | `bash spin-up-workernodes.sh --users 30` |
 
-Costs are on-demand `m5a.4xlarge` in us-east, about $0.69/hour per node.
+Each `m5a.4xlarge` costs about $0.69/hour on demand in us-east.
+
+> **5 workers for 30 users** (the step 0 example) fits about 28 users by this
+> estimate. That is usually fine, but it leaves little headroom. Order 6, or
+> run `bash spin-up-workernodes.sh --users 30` after provisioning to add one more.
 
 How the numbers are worked out:
 
@@ -80,61 +113,23 @@ total workers = 1 (platform) + ceil(users / 7)
 ```
 
 - **Per user**, plan for about 2 CPU and 8 GiB requested: the Small Workbench
-  (1 CPU / 4 GiB), the Showroom (about 0.1 CPU / 0.25 GiB), and headroom for
-  what the labs deploy (agents, EvalHub jobs).
-- **One `m5a.4xlarge`** has about 15.5 CPU and 58 GiB usable, which fits about
-  **7 users**.
+(1 CPU / 4 GiB), the Showroom (about 0.1 CPU / 0.25 GiB), and headroom for
+what the labs deploy (agents, EvalHub jobs).
+- **One** `m5a.4xlarge` has about 15.5 CPU and 58 GiB usable, which fits about
+**7 users**.
 - **One worker's worth** is reserved for the platform pods that already run on
-  the base workers (operators, MLflow, EvalHub, monitoring, Dev Spaces).
+the base workers (operators, MLflow, EvalHub, monitoring, Dev Spaces).
 
 Adjust when your workshop differs:
 
 | Situation | What to do |
 | --------- | ---------- |
 | Other user counts | `--users <n>` applies the same formula (for example, 15 users gives 4 workers) |
-| Existing workers already more than 50% reserved (the script prints this) | Add one more: `--workers <recommended + 1>` |
+| Workers already more than 50% reserved before step 3 (`spin-up-workernodes.sh --dry-run` prints this) | Add one more: `--workers <recommended + 1>` |
 | `WORKBENCH_SIZE=Medium` (2 CPU / 8 GiB per Workbench) | `USERS_PER_WORKER=4 bash spin-up-workernodes.sh --users <n>` |
 | You want an exact node count | `--workers <n>` (total workers, not extra) |
 
 GPU nodes for model serving are separate. See `../gpu_machineset_hardwareprofiles.sh`.
-
-## Quick start
-
-```bash
-# Confirm you are logged in to the right cluster as a cluster-admin
-oc whoami
-oc whoami --show-server
-
-cd scripts/workshop-prep
-
-# Step 1: user permissions (cluster-admin + rhods-admins)
-bash setup_workshop_users_rbac.sh
-
-# Step 2: worker capacity (preview, then apply; waits until nodes are Ready)
-bash spin-up-workernodes.sh --users 30 --dry-run
-bash spin-up-workernodes.sh --users 30
-
-# Step 3: per-user Workbenches (users discovered from Keycloak; admin is skipped)
-bash setup_workbench_by_users.sh
-
-# Step 4: per-user Showrooms
-export SITE_TITLE="RHOAI Hands-on Workshop"
-export HOME_INDEX_FILE="./my-home.adoc"
-export WORKSHOPS="
-basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
-agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
-evalhub|https://github.com/hyogrin/rhoai-basic-evalhub-workshop|main|content|Eval Hub Workshop
-"
-bash deploy-showroom.sh
-```
-
-To target specific users instead of everyone in Keycloak, export the **same**
-list before running steps 3 and 4, and pass the matching count to step 2:
-
-```bash
-export WORKSHOP_USERS="user1,user2,user3,user4"
-bash spin-up-workernodes.sh --users 4
-```
 
 ---
 
@@ -151,6 +146,7 @@ It:
 1. Reads the users from the `KeycloakRealmImport` CR `sso` in the `keycloak` namespace
 2. Creates a `cluster-admin-<username>` ClusterRoleBinding for each user
 3. Adds each user to the `rhods-admins` group (creating the group if needed),
+
    which gives them admin access in the RHOAI dashboard
 
 This script has no options. It always applies to **every** user in the
@@ -162,7 +158,12 @@ is not available, it exits with an error.
 
 ---
 
-## Step 2: `spin-up-workernodes.sh`
+## Step 2 (optional): `spin-up-workernodes.sh`
+
+Skip this step if you ordered the worker count from the
+[sizing table](#sizing-how-many-worker-nodes). Use it when the cluster has too
+few workers, for example after adding users. Run with `--dry-run` first: it
+shows the current workers and how busy they are, without changing anything.
 
 Adds worker nodes by scaling the cluster's **existing** worker MachineSets. Each
 new node goes to the MachineSet with the fewest replicas, so nodes spread across
@@ -180,22 +181,23 @@ It:
 3. Prints how much CPU and memory the current workers already have reserved
 4. Scales MachineSets up to the target. It never scales down.
 5. Waits up to 15 minutes for the new nodes to be Ready, then prints the
+
    commands to scale back after the workshop
 
-On the base environment, `--users 30` scales `us-east-2a`, `us-east-2b`, and
-`us-east-2c` to 2 replicas each.
+The script counts the workers you already have. For example, with 5 workers
+already running, `--users 30` adds 1 (target 6). With 6 or more, it makes no change.
 
 ### Options
 
-| Argument / variable | Default | Description |
-| ------------------- | ------- | ----------- |
-| `--users <n>` | Keycloak user count (minus `admin`) | Number of participants to size for |
-| `--workers <n>` | *(from `--users`)* | Exact total worker count; overrides `--users` |
-| `--dry-run` | off | Show the plan without scaling |
-| `--no-wait` | off | Scale and exit without waiting for nodes |
-| `USERS_PER_WORKER` | `7` | Users per added worker node |
-| `PLATFORM_WORKERS` | `1` | Workers' worth reserved for the RHOAI platform |
-| `WAIT_TIMEOUT` | `900` | Seconds to wait for nodes to be Ready |
+| Argument / variable | Default                             | Description                                    |
+| ------------------- | ----------------------------------- | ---------------------------------------------- |
+| `--users <n>`       | Keycloak user count (minus `admin`) | Number of participants to size for             |
+| `--workers <n>`     | *(from* `--users`*)*                | Exact total worker count; overrides `--users`  |
+| `--dry-run`         | off                                 | Show the plan without scaling                  |
+| `--no-wait`         | off                                 | Scale and exit without waiting for nodes       |
+| `USERS_PER_WORKER`  | `7`                                 | Users per added worker node                    |
+| `PLATFORM_WORKERS`  | `1`                                 | Workers' worth reserved for the RHOAI platform |
+| `WAIT_TIMEOUT`      | `900`                               | Seconds to wait for nodes to be Ready          |
 
 If nodes are not Ready after 15 minutes, check `oc get machines -n openshift-machine-api`
 for `Failed` machines. The usual cause is an AWS capacity or quota limit for
@@ -223,6 +225,7 @@ For each user it:
 2. Grants the user `admin` on that project
 3. Creates a `20Gi` PVC for notebook storage
 4. Creates a `Notebook` CR named `my-workbench`, using `inject-auth` on
+
    Gateway-based clusters and `inject-oauth` on legacy clusters
 5. Prints each Workbench URL
 
@@ -365,7 +368,7 @@ BASE=https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-gui
 # Step 1
 curl -sL "$BASE/setup_workshop_users_rbac.sh" | bash
 
-# Step 2
+# Step 2 (optional)
 curl -sL "$BASE/spin-up-workernodes.sh" | bash -s -- --users 30
 
 # Step 3
@@ -384,18 +387,12 @@ curl -sL "$BASE/deploy-showroom.sh" | bash
 
 ## Cleanup after the workshop
 
-**Scale workers back to the base environment** to stop the extra EC2 charges.
-`spin-up-workernodes.sh` prints the exact commands at the end of its run. For
-the base environment they are:
-
-```bash
-oc scale machineset <infra-id>-worker-us-east-2a -n openshift-machine-api --replicas=1
-oc scale machineset <infra-id>-worker-us-east-2b -n openshift-machine-api --replicas=1
-oc scale machineset <infra-id>-worker-us-east-2c -n openshift-machine-api --replicas=0
-```
-
-Do this after removing the Workbenches and Showrooms, so their pods are not
-moved onto the remaining nodes.
+**If you used step 2 and are keeping the environment**, scale the workers back
+to stop the extra EC2 charges. `spin-up-workernodes.sh` prints the exact
+`oc scale machineset ...` commands, with the original replica counts, at the end
+of its run. Do this after removing the Workbenches and Showrooms, so their pods
+are not moved onto the remaining nodes. If you are deleting the whole RHDP
+environment, skip this.
 
 **Remove only the Showroom resources.** This keeps each user's project,
 Workbench, and storage:

@@ -10,7 +10,14 @@ Quick setup guide for workshop participants on a **Field Source** cluster. Follo
 
 Use the credentials provided by your workshop instructor. Log in to the OpenShift console and verify you can access the cluster.
 
-## Step 2: Install Web Terminal
+## Step 2: Open the Web Terminal
+
+First, check whether the Web Terminal is already installed. Look for the **>_** icon in the top-right of the OpenShift console.
+
+- **The >_ icon is there:** the Web Terminal is already installed. Click **>_** to open a terminal session, then go to [Step 3](#step-3-enable-all-features).
+- **There is no >_ icon:** install the Web Terminal as described below, then open it.
+
+### Install the Web Terminal (only if the >_ icon is missing)
 
 From the OpenShift console:
 
@@ -19,11 +26,11 @@ From the OpenShift console:
 
 ![Web Terminal Operator in Software Catalog](../images/img-web-terminal-operator.png)
 
-3. Install it with default settings
+3. Install it with default settings. If the tile already shows **Installed**, skip this and refresh the console page so the **>_** icon appears.
 
 ![Install Web Terminal](../images/img-install-web-terminal.png)
 
-4. Once installed, click the **>_** icon in the top-right of the console to open a terminal session
+4. Once installed, refresh the console page and click the **>_** icon in the top-right to open a terminal session
 
 ![Open Web Terminal](../images/img-initiate-cli.png)
 
