@@ -383,6 +383,39 @@ setup_evalhub_tenants() (
       fail "Required ClusterRole ${role} is unavailable. Complete the TrustyAI/EvalHub installation first."
   done
 
+  # The namespace-wide NetworkPolicy in EvalHub's namespace only admits traffic
+  # from OpenShift AI generated namespaces. Participant projects are created by
+  # this script, so evaluation job sidecars cannot reach the EvalHub API to
+  # report status and results: jobs finish but stay "pending" in EvalHub.
+  # Admit any namespace to the EvalHub API pods on the kube-rbac-proxy port only.
+  info "Allowing participant evaluation jobs to reach the EvalHub API..."
+  oc apply -f - >/dev/null <<EOF || fail "Could not apply NetworkPolicy evalhub-allow-tenant-jobs in ${EVALHUB_NS}."
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: evalhub-allow-tenant-jobs
+  namespace: ${EVALHUB_NS}
+  labels:
+    app.kubernetes.io/part-of: evalhub-workshop
+  annotations:
+    description: Allow evaluation job sidecars in participant namespaces to report status and results to the EvalHub API.
+spec:
+  podSelector:
+    matchLabels:
+      app: eval-hub
+      component: api
+      instance: evalhub
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8443
+EOF
+  success "NetworkPolicy evalhub-allow-tenant-jobs applied in ${EVALHUB_NS}"
+
   evalhub_check_permission() {
     local ns="$1" svc="$2" verb="$3" resource="$4"
     if oc auth can-i "$verb" "$resource" -n "$ns" --as="$svc" >/dev/null 2>&1; then
