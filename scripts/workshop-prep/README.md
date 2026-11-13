@@ -1,7 +1,7 @@
 # Workshop Preparation Scripts (Administrators)
 
 Created: 2026-11-04
-Last modified: 2026-11-05
+Last modified: 2026-11-13
 
 Scripts that prepare a Field Source OpenShift AI (RHOAI 3.5) cluster for a
 hands-on workshop. Each participant gets their own **Workbench** and **Showroom**
@@ -18,7 +18,7 @@ Keycloak username (`user1`, `user2`, ...).
 ## Step 0: Order the environment
 
 Order the Field Source base environment from the
-[Red Hat Demo Platform (RHDP)](https://demo.redhat.com) with these settings: **Order Field Sourced Content - OpenShift Base**
+[Red Hat Demo Platform (RHDP)](https://demo.redhat.com) with these settings: **Field Sourced Content - OpenShift (Shared Clusters)**
 
 ![Field Source order form](../../images/img-env-provision.png)
 
@@ -32,6 +32,16 @@ Order the Field Source base environment from the
 | Enable OPEN Environment?       | unchecked                                                       |                                                                             |
 | Select Base Workloads          | **OpenShift AI** checked; Ansible Automation Platform unchecked |                                                                             |
 | Create users on cluster?       | checked, `30`                                                   | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.      |
+
+Then enable the workshop user interface (leave GitOps, Lightspeed, and LiteMaaS
+unchecked unless you need them):
+
+![Enable workshop user interface](../../images/img-workshop-interface.png)
+
+| Field                          | Value                                                           | Notes                                                                       |
+| ------------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Enable workshop user interface | on                                                              | Turns on the RHDP workshop UI for participants.                             |
+| Registration                   | `open`                                                          | Leave as open so participants can self-register.                            |
 
 Set the worker count here, when you order. That is simpler than adding nodes
 later. If you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes)
