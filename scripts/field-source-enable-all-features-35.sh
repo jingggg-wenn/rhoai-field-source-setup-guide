@@ -67,6 +67,7 @@
 #    4    | DSCI merge patch (monitoring config)          | None (COO ready)
 #    5    | DSC merge patch (full component activation)   | None (cert-mgr ready)
 #    6    | MLflow server + demo project + EvalHub        | None
+#         | (+ shared tenant NetworkPolicy, MLflow probe) |
 #    7    | MaaS Gateway CRs                              | None
 #    8    | Dashboard menu + accelerator rules            | None
 #    9    | Install RHCL + Kuadrant + Authorino TLS       | NETWORK DISRUPTION
@@ -1093,6 +1094,10 @@ fi
 
 # --- EvalHub ---
 EVALHUB_NS="redhat-ods-applications"
+# TrustyAI registers the EvalHub CRD asynchronously after the DSC patch (Step 5).
+# Without this wait, a fresh cluster can skip EvalHub creation entirely.
+wait_for 180 "EvalHub CRD" \
+    'oc get crd evalhubs.trustyai.opendatahub.io &>/dev/null 2>&1' || true
 if oc get crd evalhubs.trustyai.opendatahub.io &>/dev/null 2>&1; then
     success "EvalHub CRD registered"
     if oc get evalhub evalhub -n "$EVALHUB_NS" &>/dev/null 2>&1; then
@@ -1139,6 +1144,97 @@ spec:
 "
         success "EvalHub MLFLOW_TRACKING_URI set"
     fi
+
+    # Shared (cluster-level) tenant prerequisites. These are the parts of
+    # tenant setup that participants cannot apply from their own namespace.
+    # Kept identical to setup_evalhub_tenants() in
+    # workshop-prep/setup_workbench_by_users.sh so either script can apply them.
+    #
+    # The namespace-wide NetworkPolicy in EvalHub's namespace only admits traffic
+    # from OpenShift AI generated namespaces. Workshop projects created by script
+    # lack that label, so evaluation job sidecars cannot report status/results
+    # and jobs stay "pending". Admit any namespace on the kube-rbac-proxy port only.
+    info "Allowing tenant evaluation jobs to reach the EvalHub API..."
+    if oc apply -f - >/dev/null <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: evalhub-allow-tenant-jobs
+  namespace: ${EVALHUB_NS}
+  labels:
+    app.kubernetes.io/part-of: evalhub-workshop
+  annotations:
+    description: Allow evaluation job sidecars in participant namespaces to report status and results to the EvalHub API.
+spec:
+  podSelector:
+    matchLabels:
+      app: eval-hub
+      component: api
+      instance: evalhub
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 8443
+EOF
+    then
+        success "NetworkPolicy evalhub-allow-tenant-jobs applied in ${EVALHUB_NS}"
+    else
+        warn "Could not apply NetworkPolicy evalhub-allow-tenant-jobs in ${EVALHUB_NS}"
+    fi
+
+    # EvalHub caches its MLflow workspace probe at startup. If it started before
+    # MLflow was ready, tenant experiments fail until the API Pod is replaced.
+    # Non-fatal: every failure path warns and continues.
+    evalhub_refresh_mlflow_probe() {
+        local probe_re='"MLflow workspace support probed".*"workspaces_enabled"[[:space:]]*:[[:space:]]*'
+        local logs
+        if ! oc rollout status deployment/evalhub -n "$EVALHUB_NS" --timeout=180s >/dev/null 2>&1; then
+            warn "EvalHub deployment not rolled out -- skipping MLflow workspace probe check (re-run later)"
+            return 0
+        fi
+        if ! logs=$(oc logs deployment/evalhub -c evalhub -n "$EVALHUB_NS" --request-timeout=10s 2>/dev/null); then
+            warn "Could not read EvalHub logs -- skipping MLflow workspace probe check"
+            return 0
+        fi
+        # Here-strings, not pipes: under pipefail, grep -q exiting early can make
+        # the writer fail with SIGPIPE and turn a real match into "no match".
+        if grep -Eq "${probe_re}true" <<<"$logs"; then
+            success "EvalHub detected MLflow workspace support"
+            return 0
+        fi
+        if ! grep -Eq "${probe_re}false" <<<"$logs"; then
+            info "EvalHub MLflow workspace probe not found in logs -- leaving EvalHub running"
+            return 0
+        fi
+        warn "EvalHub started before MLflow workspace support was available"
+        if ! oc rollout status deployment/mlflow -n "$EVALHUB_NS" --timeout=120s >/dev/null 2>&1; then
+            warn "MLflow not rolled out -- re-run this script once MLflow is ready"
+            return 0
+        fi
+        if ! oc get --raw "/api/v1/namespaces/${EVALHUB_NS}/services/https:mlflow:8443/proxy/mlflow/api/3.0/mlflow/server-info" \
+            --request-timeout=10s 2>/dev/null | grep -E '"workspaces_enabled"[[:space:]]*:[[:space:]]*true' >/dev/null; then
+            warn "MLflow does not report workspace support yet -- re-run this script once MLflow is ready"
+            return 0
+        fi
+        warn "Restarting EvalHub API Pod to refresh its MLflow workspace probe (SQLite: custom providers must be re-registered)"
+        # The operator reverts Deployment restart annotations; replace the Pod directly.
+        if ! oc delete pod -n "$EVALHUB_NS" -l app=eval-hub,component=api,instance=evalhub --wait=true >/dev/null 2>&1 \
+            || ! oc rollout status deployment/evalhub -n "$EVALHUB_NS" --timeout=180s >/dev/null 2>&1; then
+            warn "EvalHub restart did not complete -- check: oc get pods -n ${EVALHUB_NS} -l app=eval-hub"
+            return 0
+        fi
+        if logs=$(oc logs deployment/evalhub -c evalhub -n "$EVALHUB_NS" --request-timeout=10s 2>/dev/null) \
+            && grep -Eq "${probe_re}true" <<<"$logs"; then
+            success "EvalHub now detects MLflow workspace support"
+        else
+            warn "EvalHub still does not report MLflow workspace support -- check the EvalHub startup logs"
+        fi
+    }
+    evalhub_refresh_mlflow_probe
 
     # RBAC
     info "Configuring EvalHub RBAC for demo namespace..."
@@ -1759,6 +1855,13 @@ else
     echo -e "  ${RED}[!!]${NC} EvalHub (${EVALHUB_PHASE:-not deployed})"
     NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
     NOT_READY_ITEMS+=("EvalHub")
+fi
+if oc get networkpolicy evalhub-allow-tenant-jobs -n redhat-ods-applications &>/dev/null; then
+    echo -e "  ${GREEN}[OK]${NC} EvalHub tenant NetworkPolicy"
+else
+    echo -e "  ${RED}[!!]${NC} EvalHub tenant NetworkPolicy (evalhub-allow-tenant-jobs)"
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("EvalHub tenant NetworkPolicy")
 fi
 DS_PHASE=$(oc get checluster devspaces -n openshift-devspaces \
     -o jsonpath='{.status.chePhase}' 2>/dev/null || true)
