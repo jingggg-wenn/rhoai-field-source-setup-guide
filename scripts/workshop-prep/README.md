@@ -449,6 +449,36 @@ Each user gets a Showroom at:
 https://showroom-showroom-<username>.<cluster-domain>
 ```
 
+After **all** users' Routes are admitted and **all** Showroom rollouts finish
+successfully, the script creates or updates a separate `showroom-userinfo`
+ConfigMap in each user's namespace. If any deployment fails, the entire
+userinfo registration stage is skipped. Existing userinfo ConfigMaps are left
+unchanged in that case. A userinfo apply failure is reported and makes the script
+exit with a nonzero status; correct the error and rerun.
+
+Each userinfo ConfigMap has the `demo.redhat.com/userinfo` label. Its
+`data.users_json` maps the username to `lab_ui_url`, `showroom_primary_view_url`,
+and `lab_instructions_url`, all pointing to that user's Showroom. The existing
+`showroom-config` remains the runtime configuration for the Showroom pods.
+
+**RHDP portal integration requires a separate collection/refresh step.** The
+script prepares the ConfigMaps; it does not update the RHDP management cluster's
+workshop assignments or message template. The catalog's userinfo collection must
+run after these ConfigMaps exist and import the URLs into each user's data.
+Do not assume that creating ConfigMaps after environment provisioning refreshes
+an existing workshop page automatically.
+
+Babylon uses `lab_ui_url` for the workshop's Lab User Interface link and removes
+it from the ordinary user data passed to message templates. To also show a
+**Lab Instructions** row in the RHDP workshop table, replace its
+`ifdef::lab_ui_url[]` block with the following inside the AsciiDoc table:
+
+```adoc
+ifdef::lab_instructions_url[]
+| *Lab Instructions* | {lab_instructions_url}
+endif::[]
+```
+
 To refresh content after a Git change, re-run the script, or restart one user's pod:
 
 ```bash
@@ -515,7 +545,7 @@ Workbench, and storage:
 
 ```bash
 for ns in user1 user2 user3 user4; do
-  oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config \
+  oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config configmap/showroom-userinfo \
     -n "$ns" --ignore-not-found
 done
 ```

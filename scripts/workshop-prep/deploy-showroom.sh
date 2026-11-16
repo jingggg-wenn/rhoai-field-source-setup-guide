@@ -8,6 +8,9 @@
 # The public hostname remains showroom-showroom-<username>.<ingress-domain>.
 #
 # Users are discovered from Keycloak (auto) or supplied explicitly.
+# After every Route is admitted and every rollout succeeds, each user's URL is
+# written to a showroom-userinfo ConfigMap for RHDP userinfo collection.
+# RHDP must collect/refresh that data before the workshop portal shows the links.
 #
 # Usage (auto-discover users from Keycloak):
 #   export SITE_TITLE="RHOAI Hands-on Workshop"
@@ -162,6 +165,11 @@ fi
 
 [[ ${#showroom_users[@]} -gt 0 ]] || showroom_fail "No users found."
 
+# These names are used as namespaces, hostnames, and RHDP JSON keys.
+for _u in "${showroom_users[@]}"; do
+  [[ "$_u" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || showroom_fail "Invalid project username: $_u"
+done
+
 # USER_PASSWORD is an optional explicit override. Otherwise, resolve each
 # participant's own credential inside the deployment loop, never users[0].
 
@@ -257,7 +265,6 @@ PATCH_EOF
 if [[ "${SKIP_FRAME_PATCH:-}" != "true" ]]; then
   _ancestors="frame-ancestors 'self'"
   for _u in "${showroom_users[@]}"; do
-    [[ "$_u" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || showroom_fail "Invalid project username: $_u"
     _ancestors+=" https://showroom-showroom-${_u}.${showroom_domain}"
   done
   oc patch ingresscontroller default -n openshift-ingress-operator --type=merge -p "$(cat <<INGRESS_HEADERS
@@ -868,10 +875,49 @@ if [[ ${#_deployed_users[@]} -gt 0 ]]; then
 fi
 
 ###############################################################################
-# 7. Summary
+# 7. Publish RHDP userinfo only after the entire deployment succeeds
+###############################################################################
+_userinfo_count=0
+if [[ ${#_failed_users[@]} -eq 0 && ${#_deployed_users[@]} -eq ${#showroom_users[@]} ]]; then
+  showroom_info "All Showrooms are ready. Registering URLs for RHDP userinfo collection..."
+  for _username in "${_deployed_users[@]}"; do
+    _ns="${_username}"
+    _url="https://showroom-showroom-${_username}.${showroom_domain}"
+
+    # Keep RHDP output separate from the Showroom runtime configuration.
+    # users_json preserves the per-user mapping when RHDP collects ConfigMaps.
+    # Babylon extracts lab_ui_url into labUserInterface; lab_instructions_url
+    # remains available to an RHDP user-message template's AsciiDoc attributes.
+    if oc apply -f - <<USERINFO_EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: showroom-userinfo
+  namespace: ${_ns}
+  labels:
+    app.kubernetes.io/managed-by: showroom-bootstrap
+    demo.redhat.com/userinfo: ""
+data:
+  users_json: |
+    {"users":{"${_username}":{"lab_ui_url":"${_url}","showroom_primary_view_url":"${_url}","lab_instructions_url":"${_url}"}}}
+USERINFO_EOF
+    then
+      _userinfo_count=$((_userinfo_count + 1))
+      showroom_success "$_username — RHDP userinfo ConfigMap applied."
+    else
+      _failed_users+=("$_username")
+      showroom_warn "$_username — RHDP userinfo apply failed; rerun after correcting the error."
+    fi
+  done
+else
+  showroom_warn "RHDP userinfo registration skipped: not all Showrooms deployed successfully."
+fi
+
+###############################################################################
+# 8. Summary
 ###############################################################################
 _ok_count=0
-for _username in "${_deployed_users[@]}"; do
+for _username in "${_deployed_users[@]+"${_deployed_users[@]}"}"; do
   _is_failed=false
   for _f in "${_failed_users[@]+"${_failed_users[@]}"}"; do
     [[ "$_f" == "$_username" ]] && _is_failed=true && break
@@ -886,11 +932,12 @@ printf '════════════════════════
 printf '  Total users : %d\n' "${#showroom_users[@]}"
 printf '  Succeeded   : %d\n' "$_ok_count"
 printf '  Workbench   : %d attached (inline)\n' "${#_workbench_attached[@]}"
+printf '  RHDP info   : %d userinfo ConfigMap(s) applied\n' "$_userinfo_count"
 [[ ${#_failed_users[@]} -eq 0 ]] || \
   printf '  Failed      : %d — %s\n' "${#_failed_users[@]}" "${_failed_users[*]}"
 printf '\n'
 printf '  URLs:\n'
-for _username in "${_deployed_users[@]}"; do
+for _username in "${_deployed_users[@]+"${_deployed_users[@]}"}"; do
   _is_failed=false
   for _f in "${_failed_users[@]+"${_failed_users[@]}"}"; do
     [[ "$_f" == "$_username" ]] && _is_failed=true && break
@@ -905,8 +952,12 @@ for _i in $(seq 0 $((ws_count - 1))); do
   printf '    %d. %s\n' "$((_i+1))" "${ws_titles[$_i]}"
 done
 printf '\n'
+if [[ $_userinfo_count -gt 0 ]]; then
+  printf '  RHDP portal: collect/refresh userinfo before the workshop links appear.\n'
+  printf '  Lab Instructions row: use lab_instructions_url in the RHDP message template.\n'
+fi
 printf '  Update    : re-run this script (idempotent)\n'
-printf '  Delete Showrooms: for ns in %s; do oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config -n "$ns" --ignore-not-found; done\n' "${showroom_users[*]}"
+printf '  Delete Showrooms: for ns in %s; do oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config configmap/showroom-userinfo -n "$ns" --ignore-not-found; done\n' "${showroom_users[*]}"
 printf '══════════════════════════════════════════════════\n'
 
 [[ ${#_failed_users[@]} -eq 0 ]] || exit 1
