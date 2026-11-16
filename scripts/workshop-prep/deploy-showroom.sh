@@ -8,9 +8,8 @@
 # The public hostname remains showroom-showroom-<username>.<ingress-domain>.
 #
 # Users are discovered from Keycloak (auto) or supplied explicitly.
-# After every Route is admitted and every rollout succeeds, each user's URL is
-# written to a showroom-userinfo ConfigMap for RHDP userinfo collection.
-# RHDP must collect/refresh that data before the workshop portal shows the links.
+# After every Route is admitted and every rollout succeeds, a shared HTML page
+# with participant links is published through a Route on the lab cluster.
 #
 # Usage (auto-discover users from Keycloak):
 #   export SITE_TITLE="RHOAI Hands-on Workshop"
@@ -49,6 +48,8 @@
 #   HOME_INDEX_FILE    Custom home page .adoc — local path or https:// URL
 #   EXTRA_TABS         Additional nookbag tabs: name|url|external (one per line)
 #   SKIP_FRAME_PATCH   Set to "true" to skip workshop ingress framing configuration
+#   LINKS_NAMESPACE    Namespace and hostname prefix for the shared links page
+#                      (default: "showroom-links")
 #
 # If a Notebook exists in the user's project namespace, a Workbench tab is
 # attached using the AI Gateway or a legacy per-workbench Route.
@@ -132,6 +133,9 @@ else
 fi
 
 SITE_TITLE="${SITE_TITLE:-Workshop}"
+LINKS_NAMESPACE="${LINKS_NAMESPACE:-showroom-links}"
+[[ "$LINKS_NAMESPACE" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ && ${#LINKS_NAMESPACE} -le 63 ]] || \
+  showroom_fail "LINKS_NAMESPACE must be a valid namespace name (at most 63 characters)."
 
 showroom_info "Showroom: \"$SITE_TITLE\" ($ws_count workshop(s))"
 for _i in $(seq 0 $((ws_count - 1))); do
@@ -165,7 +169,7 @@ fi
 
 [[ ${#showroom_users[@]} -gt 0 ]] || showroom_fail "No users found."
 
-# These names are used as namespaces, hostnames, and RHDP JSON keys.
+# These names are used as namespaces and hostnames.
 for _u in "${showroom_users[@]}"; do
   [[ "$_u" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || showroom_fail "Invalid project username: $_u"
 done
@@ -875,42 +879,187 @@ if [[ ${#_deployed_users[@]} -gt 0 ]]; then
 fi
 
 ###############################################################################
-# 7. Publish RHDP userinfo only after the entire deployment succeeds
+# 7. Publish the shared links page only after the entire deployment succeeds
 ###############################################################################
-_userinfo_count=0
+_links_ready=false
+_links_host="${LINKS_NAMESPACE}.${showroom_domain}"
 if [[ ${#_failed_users[@]} -eq 0 && ${#_deployed_users[@]} -eq ${#showroom_users[@]} ]]; then
-  showroom_info "All Showrooms are ready. Registering URLs for RHDP userinfo collection..."
-  for _username in "${_deployed_users[@]}"; do
-    _ns="${_username}"
-    _url="https://showroom-showroom-${_username}.${showroom_domain}"
+  showroom_info "All Showrooms are ready. Publishing the shared lab instructions page..."
+  _links_dir="$showroom_tmp/links"
+  mkdir -p "$_links_dir"
+  _html_title="$(printf '%s' "$SITE_TITLE" | sed \
+    -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+    -e 's/"/\&quot;/g' -e "s/'/\&#39;/g")"
 
-    # Keep RHDP output separate from the Showroom runtime configuration.
-    # users_json preserves the per-user mapping when RHDP collects ConfigMaps.
-    # Babylon extracts lab_ui_url into labUserInterface; lab_instructions_url
-    # remains available to an RHDP user-message template's AsciiDoc attributes.
-    if oc apply -f - <<USERINFO_EOF
-apiVersion: v1
-kind: ConfigMap
+  # Only the title, validated usernames, and URLs go into this public page.
+  # Credentials and per-user Showroom configuration are never copied here.
+  {
+    cat <<HTML_HEAD
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${_html_title} | Lab Instructions</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #f5f5f5; color: #151515; font-family: system-ui, sans-serif; }
+    main { max-width: 960px; margin: 0 auto; padding: 48px 24px; }
+    .eyebrow { color: #a30000; font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    h1 { margin: 12px 0; font-size: clamp(1.8rem, 4vw, 2.6rem); overflow-wrap: anywhere; }
+    p { color: #4d4d4d; line-height: 1.6; }
+    ul { list-style: none; padding: 0; margin: 32px 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    a { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 100%; padding: 20px; border: 1px solid #d2d2d2; border-radius: 6px; background: white; color: #0066cc; text-decoration: none; }
+    a:hover { border-color: #0066cc; background: #edf5ff; }
+    a:focus-visible { outline: 3px solid #0066cc; outline-offset: 3px; }
+    strong { color: #151515; overflow-wrap: anywhere; }
+    span { font-size: .85rem; }
+    footer { border-top: 1px solid #d2d2d2; padding-top: 16px; font-size: .85rem; color: #6a6e73; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Lab Instructions</div>
+    <h1>${_html_title}</h1>
+    <p>Select the username assigned to you to open your lab instructions.</p>
+    <ul aria-label="Participant lab instructions">
+HTML_HEAD
+    for _username in "${showroom_users[@]}"; do
+      printf '      <li><a href="https://showroom-showroom-%s.%s" target="_blank" rel="noopener noreferrer"><strong>%s</strong><span>Open lab &#8599;</span></a></li>\n' \
+        "$_username" "$showroom_domain" "$_username"
+    done
+    cat <<HTML_TAIL
+    </ul>
+    <footer>${#showroom_users[@]} participants &middot; Links open in a new tab.</footer>
+  </main>
+</body>
+</html>
+HTML_TAIL
+  } > "$_links_dir/index.html"
+
+  # Use unprivileged ports and writable temporary paths for OpenShift's random UID.
+  cat > "$_links_dir/nginx.conf" <<'LINKS_NGINX'
+worker_processes 1;
+pid /tmp/nginx.pid;
+error_log /dev/stderr warn;
+events { worker_connections 128; }
+http {
+  access_log /dev/stdout;
+  client_body_temp_path /tmp/client_temp;
+  proxy_temp_path /tmp/proxy_temp;
+  fastcgi_temp_path /tmp/fastcgi_temp;
+  uwsgi_temp_path /tmp/uwsgi_temp;
+  scgi_temp_path /tmp/scgi_temp;
+  server {
+    listen 8080;
+    server_name _;
+    root /etc/workshop-links/html;
+    index index.html;
+    charset utf-8;
+    default_type text/html;
+    add_header Cache-Control "no-store" always;
+    location / { try_files $uri $uri/ =404; }
+  }
+}
+LINKS_NGINX
+
+  _existing="$(oc get namespace "$LINKS_NAMESPACE" --ignore-not-found -o jsonpath='{.metadata.name}')"
+  if [[ -z "$_existing" ]]; then
+    oc create namespace "$LINKS_NAMESPACE"
+  fi
+  if ! oc create configmap showroom-links -n "$LINKS_NAMESPACE" \
+    --from-file="index.html=$_links_dir/index.html" \
+    --from-file="nginx.conf=$_links_dir/nginx.conf" \
+    --dry-run=client -o yaml | oc apply -f -; then
+    showroom_fail "Shared links ConfigMap apply failed; correct the error and rerun."
+  fi
+
+  # Changing page contents or server configuration triggers a rollout on rerun.
+  _links_hash="$(cat "$_links_dir/index.html" "$_links_dir/nginx.conf" | _sha256)"
+  _links_hash="${_links_hash%% *}"
+  cat > "$_links_dir/workload.yaml" <<LINKS_WORKLOAD
+apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: showroom-userinfo
-  namespace: ${_ns}
-  labels:
-    app.kubernetes.io/managed-by: showroom-bootstrap
-    demo.redhat.com/userinfo: ""
-data:
-  users_json: |
-    {"users":{"${_username}":{"lab_ui_url":"${_url}","showroom_primary_view_url":"${_url}","lab_instructions_url":"${_url}"}}}
-USERINFO_EOF
-    then
-      _userinfo_count=$((_userinfo_count + 1))
-      showroom_success "$_username — RHDP userinfo ConfigMap applied."
-    else
-      _failed_users+=("$_username")
-      showroom_warn "$_username — RHDP userinfo apply failed; rerun after correcting the error."
-    fi
-  done
+  name: showroom-links
+  namespace: ${LINKS_NAMESPACE}
+  labels: {app.kubernetes.io/managed-by: showroom-bootstrap}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: showroom-links}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: showroom-links}
+      annotations: {showroom-bootstrap/content-sha256: "${_links_hash}"}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: web
+          image: registry.access.redhat.com/ubi9/nginx-126:latest
+          command: [nginx]
+          args: ["-c", "/etc/workshop-links/nginx.conf", "-g", "daemon off;"]
+          ports: [{name: http, containerPort: 8080}]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 5m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          volumeMounts:
+            - {name: content, mountPath: /etc/workshop-links, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: content
+          configMap:
+            name: showroom-links
+            items:
+              - {key: index.html, path: html/index.html}
+              - {key: nginx.conf, path: nginx.conf}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: showroom-links
+  namespace: ${LINKS_NAMESPACE}
+spec:
+  selector: {app.kubernetes.io/name: showroom-links}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: showroom-links
+  namespace: ${LINKS_NAMESPACE}
+spec:
+  host: "${_links_host}"
+  to: {kind: Service, name: showroom-links}
+  port: {targetPort: http}
+  tls: {termination: edge, insecureEdgeTerminationPolicy: Redirect}
+LINKS_WORKLOAD
+
+  if oc apply -f "$_links_dir/workload.yaml" && \
+    oc rollout status deployment/showroom-links -n "$LINKS_NAMESPACE" --timeout=180s && \
+    oc wait route/showroom-links -n "$LINKS_NAMESPACE" \
+      --for='jsonpath={.status.ingress[0].conditions[?(@.type=="Admitted")].status}=True' --timeout=60s; then
+    _links_ready=true
+    showroom_success "Shared lab instructions page is ready."
+  else
+    showroom_warn "Shared links page deployment failed; correct the error and rerun."
+  fi
 else
-  showroom_warn "RHDP userinfo registration skipped: not all Showrooms deployed successfully."
+  showroom_warn "Shared links page publication skipped: not all Showrooms deployed successfully. Existing page left unchanged."
 fi
 
 ###############################################################################
@@ -927,12 +1076,16 @@ done
 
 printf '\n'
 printf '══════════════════════════════════════════════════\n'
-printf ' Showroom deployment complete!\n'
+printf ' Showroom deployment summary\n'
 printf '══════════════════════════════════════════════════\n\n'
 printf '  Total users : %d\n' "${#showroom_users[@]}"
 printf '  Succeeded   : %d\n' "$_ok_count"
 printf '  Workbench   : %d attached (inline)\n' "${#_workbench_attached[@]}"
-printf '  RHDP info   : %d userinfo ConfigMap(s) applied\n' "$_userinfo_count"
+if [[ "$_links_ready" == true ]]; then
+  printf '  Share URL   : https://%s\n' "$_links_host"
+else
+  printf '  Share URL   : not published by this run\n'
+fi
 [[ ${#_failed_users[@]} -eq 0 ]] || \
   printf '  Failed      : %d — %s\n' "${#_failed_users[@]}" "${_failed_users[*]}"
 printf '\n'
@@ -952,12 +1105,9 @@ for _i in $(seq 0 $((ws_count - 1))); do
   printf '    %d. %s\n' "$((_i+1))" "${ws_titles[$_i]}"
 done
 printf '\n'
-if [[ $_userinfo_count -gt 0 ]]; then
-  printf '  RHDP portal: collect/refresh userinfo before the workshop links appear.\n'
-  printf '  Lab Instructions row: use lab_instructions_url in the RHDP message template.\n'
-fi
-printf '  Update    : re-run this script (idempotent)\n'
+printf '  Update    : re-run this script with the full participant list (idempotent)\n'
 printf '  Delete Showrooms: for ns in %s; do oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config configmap/showroom-userinfo -n "$ns" --ignore-not-found; done\n' "${showroom_users[*]}"
+printf '  Delete links page: oc delete deployment/showroom-links service/showroom-links route/showroom-links configmap/showroom-links -n %s --ignore-not-found\n' "$LINKS_NAMESPACE"
 printf '══════════════════════════════════════════════════\n'
 
-[[ ${#_failed_users[@]} -eq 0 ]] || exit 1
+[[ ${#_failed_users[@]} -eq 0 && "$_links_ready" == true ]] || exit 1

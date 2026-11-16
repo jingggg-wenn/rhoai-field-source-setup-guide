@@ -386,10 +386,11 @@ project as their Workbench. Each Showroom is personalized with the user's
 username, password, and login command, and shows the Workbench, OpenShift Console,
 and RHOAI Dashboard as tabs next to the lab content.
 
-No Helm, image build, or extra application is needed. Everything runs from
-ConfigMaps and the upstream `quay.io/rhpds` images. The pods download the lab
-content from Git and the Showroom theme from GitHub when they start, so the
-cluster needs internet access.
+No Helm or image build is needed. The Showrooms run from ConfigMaps and the
+upstream `quay.io/rhpds` images. After deployment, a small UBI Nginx server hosts
+a shared HTML page with links to every participant's Showroom. The cluster
+needs internet access to pull images, download lab content from Git, and fetch
+the Showroom theme from GitHub.
 
 ```bash
 export SITE_TITLE="RHOAI Hands-on Workshop"
@@ -431,6 +432,7 @@ Blank lines and lines starting with `#` are ignored.
 | `MAX_PARALLEL` | `10` | Maximum rollouts waited on at once |
 | `EXTRA_TABS` | *(none)* | Extra tabs, one per line: `name\|url\|external` |
 | `SKIP_FRAME_PATCH` | *(off)* | Set to `true` to skip the ingress header changes for embedding |
+| `LINKS_NAMESPACE` | `showroom-links` | Namespace and hostname prefix for the shared participant links page |
 
 ### Custom home page
 
@@ -449,35 +451,36 @@ Each user gets a Showroom at:
 https://showroom-showroom-<username>.<cluster-domain>
 ```
 
-After **all** users' Routes are admitted and **all** Showroom rollouts finish
-successfully, the script creates or updates a separate `showroom-userinfo`
-ConfigMap in each user's namespace. If any deployment fails, the entire
-userinfo registration stage is skipped. Existing userinfo ConfigMaps are left
-unchanged in that case. A userinfo apply failure is reported and makes the script
-exit with a nonzero status; correct the error and rerun.
+Share this common URL with participants:
 
-Each userinfo ConfigMap has the `demo.redhat.com/userinfo` label. Its
-`data.users_json` maps the username to `lab_ui_url`, `showroom_primary_view_url`,
-and `lab_instructions_url`, all pointing to that user's Showroom. The existing
-`showroom-config` remains the runtime configuration for the Showroom pods.
-
-**RHDP portal integration requires a separate collection/refresh step.** The
-script prepares the ConfigMaps; it does not update the RHDP management cluster's
-workshop assignments or message template. The catalog's userinfo collection must
-run after these ConfigMaps exist and import the URLs into each user's data.
-Do not assume that creating ConfigMaps after environment provisioning refreshes
-an existing workshop page automatically.
-
-Babylon uses `lab_ui_url` for the workshop's Lab User Interface link and removes
-it from the ordinary user data passed to message templates. To also show a
-**Lab Instructions** row in the RHDP workshop table, replace its
-`ifdef::lab_ui_url[]` block with the following inside the AsciiDoc table:
-
-```adoc
-ifdef::lab_instructions_url[]
-| *Lab Instructions* | {lab_instructions_url}
-endif::[]
+```text
+https://showroom-links.<cluster-domain>
 ```
+
+The HTML page lists usernames with clickable lab instruction links. Participants
+select their assigned username. The page is accessible without a login and
+contains no passwords or tokens.
+
+After **all** users' Routes are admitted and **all** Showroom rollouts finish
+successfully, the script generates `index.html` and stores it in the
+`showroom-links` ConfigMap in `LINKS_NAMESPACE`. It applies a Deployment,
+Service, and HTTPS Route with the same resource name, then waits for the page
+server rollout and Route admission before printing **Share URL**. A custom
+`LINKS_NAMESPACE` changes the URL to `https://<LINKS_NAMESPACE>.<cluster-domain>`.
+
+Rerunning updates the same resources and URL. A content checksum triggers a page
+server rollout when the HTML or Nginx configuration changes, and the page is
+served with `Cache-Control: no-store`. Always run with the **full participant
+list**: the page is regenerated from the users selected in that run.
+
+If any user deployment fails, publication is skipped and the existing shared
+page is left unchanged. If publishing the page itself fails, the script exits
+with a nonzero status and does not report a successful Share URL. Correct the
+error and rerun.
+
+This page is hosted on the lab cluster and does not require an RHDP message
+template change or userinfo collection. The script no longer creates
+`showroom-userinfo` ConfigMaps; any created by older versions are left in place.
 
 To refresh content after a Git change, re-run the script, or restart one user's pod:
 
@@ -548,6 +551,13 @@ for ns in user1 user2 user3 user4; do
   oc delete deployment/showroom service/showroom route/showroom configmap/showroom-config configmap/showroom-userinfo \
     -n "$ns" --ignore-not-found
 done
+```
+
+Remove the shared links page (use your custom `LINKS_NAMESPACE` if set):
+
+```bash
+oc delete deployment/showroom-links service/showroom-links route/showroom-links configmap/showroom-links \
+  -n "${LINKS_NAMESPACE:-showroom-links}" --ignore-not-found
 ```
 
 To remove everything for a user, including their Workbench data, delete the
