@@ -50,6 +50,18 @@
 #    TooManyOperatorGroups failure. The Subscription is still applied
 #    (idempotent) to ensure the desired channel is set.
 #
+# 7. Kuadrant operator sized for workshops (Step 9).
+#    RHCL's default 300Mi memory limit OOMKills the Kuadrant operator once
+#    ~30 users create MaaS subscriptions. Step 9 sets 1Gi/4Gi memory and
+#    200m/1 CPU through the RHCL OLM Subscription, right after the CSV
+#    succeeds and before the Kuadrant CR exists. Patched only when values
+#    differ, so re-runs do not restart the operator. Override with
+#    KUADRANT_{CPU,MEM}_{REQUEST,LIMIT} environment variables.
+#
+# 8. DCGM exporter ServiceMonitor (Step 3b).
+#    ClusterPolicy sets dcgmExporter.serviceMonitor.enabled so cluster
+#    Prometheus scrapes GPU metrics. Existing ClusterPolicies are patched.
+#
 # --------------------------------------------------------------------------
 # Execution order
 # --------------------------------------------------------------------------
@@ -106,7 +118,7 @@
 #   - Field Source base environment (Keycloak IDP, cert-manager pre-installed)
 #
 # Created: 02 Nov 2026
-# Last modified: 02 Nov 2026
+# Last modified: 17 Nov 2026
 ###############################################################################
 set -euo pipefail
 
@@ -1599,6 +1611,59 @@ if [ "$SKIP_INSTALL" != true ]; then
         'oc get csv -n "'"$RHCL_NS"'" --no-headers 2>/dev/null | grep -q "rhcl-operator.*Succeeded"'
 fi
 
+# Kuadrant operator resources (OOMKill fix)
+# RHCL 1.4.3 ships kuadrant-operator-controller-manager with a 300Mi memory
+# limit. With ~30 workshop users creating MaaS subscriptions, the operator
+# exceeds it, is OOMKilled in a loop, and new TokenRateLimitPolicies never
+# get a status (MaaS subscriptions Degraded, auth policies Pending).
+# Observed usage: ~530Mi at ~30 users x 1 model x 2 tiers.
+#
+# Set through the OLM Subscription (spec.config.resources); OLM reverts
+# direct Deployment edits. Idempotent: the Subscription is patched only when
+# its values differ from the targets below, so re-runs do not trigger an
+# operator restart. A changed value makes OLM roll the operator pod
+# (~3-5 min, policy reconciliation pauses), so the script waits for the
+# rollout before creating the Kuadrant CR. Override via environment, e.g.
+#   KUADRANT_MEM_LIMIT=8Gi bash field-source-enable-all-features-35.sh
+KUADRANT_CPU_REQUEST="${KUADRANT_CPU_REQUEST:-200m}"
+KUADRANT_MEM_REQUEST="${KUADRANT_MEM_REQUEST:-1Gi}"
+KUADRANT_CPU_LIMIT="${KUADRANT_CPU_LIMIT:-1}"
+KUADRANT_MEM_LIMIT="${KUADRANT_MEM_LIMIT:-4Gi}"
+KUADRANT_DEPLOY="kuadrant-operator-controller-manager"
+
+RHCL_SUB_REF=$(oc get subscriptions.operators.coreos.com -A \
+    -o jsonpath='{range .items[?(@.spec.name=="rhcl-operator")]}{.metadata.namespace}{" "}{.metadata.name}{"\n"}{end}' \
+    2>/dev/null | head -1 || true)
+if [ -n "$RHCL_SUB_REF" ]; then
+    RHCL_SUB_NS="${RHCL_SUB_REF%% *}"
+    RHCL_SUB_NAME="${RHCL_SUB_REF##* }"
+    CUR_RES=$(oc get subscriptions.operators.coreos.com "$RHCL_SUB_NAME" -n "$RHCL_SUB_NS" \
+        -o jsonpath='{.spec.config.resources.requests.cpu}|{.spec.config.resources.requests.memory}|{.spec.config.resources.limits.cpu}|{.spec.config.resources.limits.memory}' \
+        2>/dev/null || true)
+    WANT_RES="${KUADRANT_CPU_REQUEST}|${KUADRANT_MEM_REQUEST}|${KUADRANT_CPU_LIMIT}|${KUADRANT_MEM_LIMIT}"
+
+    if [ "$CUR_RES" = "$WANT_RES" ]; then
+        success "Kuadrant operator resources already set (mem ${KUADRANT_MEM_REQUEST}/${KUADRANT_MEM_LIMIT}, cpu ${KUADRANT_CPU_REQUEST}/${KUADRANT_CPU_LIMIT})"
+    else
+        info "Setting Kuadrant operator resources via Subscription ${RHCL_SUB_NS}/${RHCL_SUB_NAME} (current: ${CUR_RES:-default})..."
+        if oc patch subscriptions.operators.coreos.com "$RHCL_SUB_NAME" -n "$RHCL_SUB_NS" --type=merge -p "{
+          \"spec\": { \"config\": { \"resources\": {
+            \"requests\": { \"cpu\": \"${KUADRANT_CPU_REQUEST}\", \"memory\": \"${KUADRANT_MEM_REQUEST}\" },
+            \"limits\":   { \"cpu\": \"${KUADRANT_CPU_LIMIT}\",   \"memory\": \"${KUADRANT_MEM_LIMIT}\" }
+          } } }
+        }" >/dev/null 2>&1; then
+            success "Kuadrant operator Subscription patched (mem ${KUADRANT_MEM_REQUEST}/${KUADRANT_MEM_LIMIT}, cpu ${KUADRANT_CPU_REQUEST}/${KUADRANT_CPU_LIMIT})"
+            wait_for 360 "Kuadrant operator rolled out with ${KUADRANT_MEM_LIMIT} memory limit" \
+                '[ "$(oc get deploy '"$KUADRANT_DEPLOY"' -n '"$RHCL_SUB_NS"' -o jsonpath="{.spec.template.spec.containers[0].resources.limits.memory}" 2>/dev/null)" = "'"$KUADRANT_MEM_LIMIT"'" ] && oc rollout status deploy/'"$KUADRANT_DEPLOY"' -n '"$RHCL_SUB_NS"' --timeout=5s' \
+                || warn "Kuadrant operator rollout not finished yet -- OLM applies it in the background; verify in Step 11"
+        else
+            warn "Could not patch Kuadrant operator resources on ${RHCL_SUB_NS}/${RHCL_SUB_NAME}"
+        fi
+    fi
+else
+    warn "RHCL Subscription not found -- Kuadrant operator resources not set (re-run after RHCL installs)"
+fi
+
 # Kuadrant CR
 if oc get crd kuadrants.kuadrant.io &>/dev/null 2>&1; then
     if oc get kuadrant kuadrant -n "$RHCL_NS" &>/dev/null 2>&1; then
@@ -1767,6 +1832,15 @@ else
     fi
     NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
     NOT_READY_ITEMS+=("RHCL")
+fi
+KUADRANT_LIVE_LIMIT=$(oc get deploy kuadrant-operator-controller-manager -n redhat-connectivity-link-operator \
+    -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}' 2>/dev/null || true)
+if [ -n "$KUADRANT_LIVE_LIMIT" ]; then
+    if [ "$KUADRANT_LIVE_LIMIT" = "${KUADRANT_MEM_LIMIT:-4Gi}" ]; then
+        echo -e "  ${GREEN}[OK]${NC} Kuadrant operator memory limit (${KUADRANT_LIVE_LIMIT})"
+    else
+        echo -e "  ${YELLOW}[..]${NC} Kuadrant operator memory limit (${KUADRANT_LIVE_LIMIT}, target ${KUADRANT_MEM_LIMIT:-4Gi}; OOMKill risk at default 300Mi)"
+    fi
 fi
 
 echo ""
