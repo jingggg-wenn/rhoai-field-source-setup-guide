@@ -509,6 +509,13 @@ fi
 if oc get crd clusterpolicies.nvidia.com &>/dev/null 2>&1; then
     if oc get clusterpolicy gpu-cluster-policy &>/dev/null 2>&1; then
         success "ClusterPolicy already exists"
+        # Existing clusters may predate the serviceMonitor setting below.
+        # Without it, cluster Prometheus never scrapes DCGM and the console
+        # GPU dashboards stay empty. Merge patch is idempotent.
+        oc patch clusterpolicy gpu-cluster-policy --type merge \
+            -p '{"spec":{"dcgmExporter":{"serviceMonitor":{"enabled":true}}}}' >/dev/null \
+            && success "ClusterPolicy dcgmExporter.serviceMonitor enabled" \
+            || warn "Could not enable dcgmExporter.serviceMonitor on ClusterPolicy"
     else
         info "Creating ClusterPolicy (GPU Operator CR)..."
         oc apply -f - <<'EOF'
@@ -527,6 +534,10 @@ spec:
     enabled: true
     config:
       name: ""
+    # Creates the nvidia-dcgm-exporter ServiceMonitor so cluster Prometheus
+    # scrapes GPU metrics (OpenShift console GPU dashboards).
+    serviceMonitor:
+      enabled: true
   devicePlugin:
     config:
       name: ""
@@ -1797,6 +1808,13 @@ else
     echo -e "  ${RED}[!!]${NC} ClusterPolicy (not found)"
     NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
     NOT_READY_ITEMS+=("ClusterPolicy")
+fi
+if [ -n "$CP_STATE" ]; then
+    if oc get servicemonitor nvidia-dcgm-exporter -n nvidia-gpu-operator &>/dev/null 2>&1; then
+        echo -e "  ${GREEN}[OK]${NC} DCGM exporter ServiceMonitor (cluster Prometheus)"
+    else
+        echo -e "  ${YELLOW}[..]${NC} DCGM exporter ServiceMonitor (not created yet)"
+    fi
 fi
 LWS_AVAILABLE=$(oc get leaderworkersetoperator cluster -n openshift-lws-operator \
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}' 2>/dev/null || true)
