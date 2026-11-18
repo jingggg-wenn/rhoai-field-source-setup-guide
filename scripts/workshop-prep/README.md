@@ -20,6 +20,12 @@ Keycloak username (`user1`, `user2`, ...).
 Order the Field Source base environment from the
 [Red Hat Demo Platform (RHDP)](https://demo.redhat.com) with these settings: **Field Sourced Content - OpenShift (Shared Clusters)**
 
+> **Order it with the OPEN environment enabled** (tick **Enable OPEN Environment?**).
+>
+> Without it, the vCPU limit for **G and VT instance types** (the GPU nodes) can
+> be as low as **64 vCPU**, which leaves little room for GPU nodes. Worker nodes
+> (`m5a.4xlarge`) are a different instance type and do not count toward this limit.
+
 ![Field Source order form](../../images/img-env-provision.png)
 
 | Field                          | Value                                                           | Notes                                                                       |
@@ -29,16 +35,18 @@ Order the Field Source base environment from the
 | OpenShift Version              | `4.22`                                                          |                                                                             |
 | OpenShift Worker count         | `5`                                                             | Size this for your user count. See [Sizing](#sizing-how-many-worker-nodes). |
 | OpenShift Worker instance type | `m5a.4xlarge`                                                   | 16 vCPU, 64 GiB. The sizing guide assumes this type.                        |
-| Enable OPEN Environment?       | **checked**                                                     | Avoids the lower default vCPU limit. See the note below.                    |
+| Enable OPEN Environment?       | **checked**                                                     | Avoids the lower G/VT (GPU) vCPU limit. See the note below.                 |
 | Select Base Workloads          | **OpenShift AI** checked; Ansible Automation Platform unchecked |                                                                             |
 | Create users on cluster?       | checked, `30`                                                   | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.      |
 
-> **Note: vCPU limit.** Without the OPEN environment, the default vCPU limit
-> can be as low as **64 vCPU**. The CPU workers use most of that (each
-> `m5a.4xlarge` is 16 vCPU), and each GPU node in [step 3](#step-3-gpu_machineset_hardwareprofilessh)
-> adds 8 vCPU (`g6.2xlarge`). If you plan to run more GPU nodes, you might need to
-> increase the vCPU limit when you provision. Otherwise new machines stay in
-> `Provisioning` or `Failed` with a quota error (`oc get machines -n openshift-machine-api`).
+> **Note: G/VT vCPU limit.** Without the OPEN environment, the vCPU limit for
+> G and VT instance types can be as low as **64 vCPU**. Each GPU node in
+> [step 3](#step-3-gpu_machineset_hardwareprofilessh) is a `g6.2xlarge` (G type,
+> 8 vCPU), so this limit caps how many GPU nodes you can run. If you plan to
+> provision more GPU nodes, you might need to increase the vCPU limit. Otherwise
+> new GPU machines stay in `Provisioning` or `Failed` with a quota error
+> (`oc get machines -n openshift-machine-api`). Worker nodes (`m5a.4xlarge`) are a
+> different instance type and are not part of this limit.
 
 Then enable the workshop user interface (leave GitOps, Lightspeed, and LiteMaaS
 unchecked unless you need them):
@@ -118,6 +126,9 @@ bash spin-up-workernodes.sh --users 4
 - Already logged in to the cluster as a cluster-admin. Check with `oc whoami`
 (it should print your admin user) and `oc whoami --show-server` (it should
 print this cluster's API URL).
+- The environment ordered with **Enable OPEN Environment?** checked (step 0).
+Without it, the vCPU limit for G and VT instance types (GPU nodes) can be
+64 vCPU, which limits how many GPU nodes you can add.
 - RHOAI 3.5 installed (the Field Source base environment includes it when
 **OpenShift AI** is checked in step 0)
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
@@ -279,6 +290,13 @@ oc get nodes -l nvidia.com/gpu.present=true                    # GPU usable when
 How many GPU nodes: one per model that runs at the same time. One L4 fits one
 small LLM (about 7–8B parameters). Each `g6.2xlarge` costs about $0.98/hour on
 demand in us-east.
+
+> **G/VT vCPU limit:** each `g6.2xlarge` GPU node adds 8 vCPU to the G and VT
+> instance limit. Without the OPEN environment, that limit can be as low as
+> 64 vCPU, so you might need to increase it if you plan to provision more GPU
+> nodes (see [step 0](#step-0-order-the-environment)). If a GPU
+> machine stays in `Provisioning` or `Failed`, check
+> `oc describe machine <name> -n openshift-machine-api` for a quota error.
 
 A new node appears in `oc get nodes` after about 5–10 minutes, but is only
 usable for GPU workloads once the GPU Operator has installed the driver and
