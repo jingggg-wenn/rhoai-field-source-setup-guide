@@ -83,7 +83,8 @@ if ! oc whoami &>/dev/null; then
 fi
 info "Logged in as: $(oc whoami)"
 
-if ! oc api-resources --api-group=kubeflow.org 2>/dev/null | grep -q notebooks; then
+# Here-string, not a pipe: grep -q exits early and SIGPIPE + pipefail gives a false "not found".
+if ! grep -q notebooks <<<"$(oc api-resources --api-group=kubeflow.org 2>/dev/null)"; then
   fail "Notebook CRD (kubeflow.org) not found. Is OpenShift AI workbenches installed?"
 fi
 
