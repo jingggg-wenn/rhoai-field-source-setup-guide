@@ -1,7 +1,7 @@
 # Workshop Preparation Scripts (Administrators)
 
 Created: 2026-11-04
-Last modified: 2026-11-13
+Last modified: 2026-11-18
 
 Scripts that prepare a Field Source OpenShift AI (RHOAI 3.5) cluster for a
 hands-on workshop. Each participant gets their own **Workbench** and **Showroom**
@@ -29,9 +29,16 @@ Order the Field Source base environment from the
 | OpenShift Version              | `4.22`                                                          |                                                                             |
 | OpenShift Worker count         | `5`                                                             | Size this for your user count. See [Sizing](#sizing-how-many-worker-nodes). |
 | OpenShift Worker instance type | `m5a.4xlarge`                                                   | 16 vCPU, 64 GiB. The sizing guide assumes this type.                        |
-| Enable OPEN Environment?       | unchecked                                                       |                                                                             |
+| Enable OPEN Environment?       | **checked**                                                     | Avoids the lower default vCPU limit. See the note below.                    |
 | Select Base Workloads          | **OpenShift AI** checked; Ansible Automation Platform unchecked |                                                                             |
 | Create users on cluster?       | checked, `30`                                                   | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.      |
+
+> **Note: vCPU limit.** Without the OPEN environment, the default vCPU limit
+> can be as low as **64 vCPU**. The CPU workers use most of that (each
+> `m5a.4xlarge` is 16 vCPU), and each GPU node in [step 3](#step-3-gpu_machineset_hardwareprofilessh)
+> adds 8 vCPU (`g6.2xlarge`). If you plan to run more GPU nodes, you might need to
+> increase the vCPU limit when you provision. Otherwise new machines stay in
+> `Provisioning` or `Failed` with a quota error (`oc get machines -n openshift-machine-api`).
 
 Then enable the workshop user interface (leave GitOps, Lightspeed, and LiteMaaS
 unchecked unless you need them):
@@ -52,15 +59,17 @@ When the environment is ready, run the workshop prep scripts below, in order.
 ## Run order
 
 Run the scripts in this order, from this folder (`cd scripts/workshop-prep`).
-Step 2 is optional.
+Step 2 is optional. Steps 4 and 5 live one folder up (`scripts/`).
 
 | Step | Script | What it does | Arguments to set | Time |
 | ---- | ------ | ------------ | ---------------- | ---- |
 | 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` | None | Seconds |
 | 2 *(optional)* | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Adds worker nodes. Only needed if you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes) recommends. | `--users <n>`; preview first with `--dry-run` | 5–15 min |
 | 3 | [`gpu_machineset_hardwareprofiles.sh`](gpu_machineset_hardwareprofiles.sh) | Creates a GPU MachineSet (0 nodes) and the `gpu-profile` HardwareProfile that participants select to deploy models on a GPU | None. Then scale the GPU MachineSet up (see [step 3](#step-3-gpu_machineset_hardwareprofilessh)) | 1 min, plus 15–20 min per GPU node |
-| 4 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user and configures EvalHub tenants | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min, plus tenant verification |
-| 5 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
+| 4 | [`../field-source-enable-all-features-35.sh`](../field-source-enable-all-features-35.sh) | Installs the supporting operators (including NFD and the GPU Operator), enables all DSC components, and deploys MLflow and the shared EvalHub | None | 20–40 min on a fresh cluster |
+| 5 | [`../field-source-setup-maas-35.sh`](../field-source-setup-maas-35.sh) | Sets up Models-as-a-Service: PostgreSQL, Authorino TLS, and rate limiting | Optional: `--postgres-connection <url>`, `--skip-rate-limiting` | A few minutes |
+| 6 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user and configures EvalHub tenants | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min, plus tenant verification |
+| 7 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
 
 Why this order:
 
@@ -69,21 +78,34 @@ If you use step 2, run it before the Workbenches: Workbench pods start as soon
 as they are created, and if the new nodes are not Ready yet, the first
 Workbenches crowd the existing workers and stay there.
 `spin-up-workernodes.sh` waits until the new nodes are Ready.
-- **GPU setup (step 3) before the Workbenches.** A new GPU node takes 15–20
-minutes to become usable (EC2 boot, then the GPU Operator installs the driver).
-Creating and scaling it here lets it come up while steps 4 and 5 run. The
-`gpu-profile` HardwareProfile must exist before participants deploy models.
-- **EvalHub tenants after project creation (step 4).** Tenant RBAC is applied
-automatically after the Workbench creation loop and before URL lookup. Deploy the shared EvalHub first with
-`field-source-enable-all-features-35.sh`; tenant setup requires existing projects
-and the TrustyAI ClusterRoles. Workbench pods do not need to be Running yet.
-- **Step 5 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
+- **GPU setup (step 3) early.** A new GPU node takes 15–20 minutes to become
+usable (EC2 boot, then the GPU Operator installs the driver). Creating and
+scaling it here lets it come up while steps 4 to 7 run. Step 4 installs the GPU
+Operator and NFD, which label the node once it joins. The `gpu-profile`
+HardwareProfile must exist before participants deploy models.
+- **All features (step 4) before MaaS and the Workbenches.** Step 4 enables the
+AI gateway and Models-as-a-Service components and installs RHCL, which step 5
+requires. It also deploys the shared EvalHub and MLflow, which step 6 needs.
+- **MaaS (step 5) right after step 4.** It builds on the gateway and RHCL from
+step 4 and does not depend on the Workbenches.
+- **Workbenches and EvalHub tenants (step 6) after EvalHub exists.** Tenant
+RBAC is applied automatically after the Workbench creation loop and requires
+the shared EvalHub ServiceAccount and TrustyAI ClusterRoles from step 4. If you
+run step 6 before step 4, the Workbenches are created but tenant setup fails;
+re-run step 6 after step 4. Workbench pods do not need to be Running yet.
+- **Step 7 last.** `deploy-showroom.sh` adds a Workbench tab only when it finds
 a Workbench in the user's project.
+
+> Run step 4 from your own terminal, not the Web Terminal. It installs RHCL,
+> which briefly disrupts the cluster's ingress. If your terminal might
+> disconnect, run it with
+> `nohup bash ../field-source-enable-all-features-35.sh > /tmp/field-source.log 2>&1 &`
+> and follow it with `tail -f /tmp/field-source.log`.
 
 All scripts are idempotent. Re-run any of them to add users or pick up changes.
 
 To target specific users instead of everyone in Keycloak, export the **same**
-list before running steps 4 and 5. If you use step 2, pass the matching count:
+list before running steps 6 and 7. If you use step 2, pass the matching count:
 
 ```bash
 export WORKSHOP_USERS="user1,user2,user3,user4"
@@ -96,15 +118,15 @@ bash spin-up-workernodes.sh --users 4
 - Already logged in to the cluster as a cluster-admin. Check with `oc whoami`
 (it should print your admin user) and `oc whoami --show-server` (it should
 print this cluster's API URL).
-- RHOAI 3.5 installed with the workbenches component ready
-- Shared EvalHub and MLflow deployed with `field-source-enable-all-features-35.sh`
-before step 4, which configures EvalHub tenants by default
+- RHOAI 3.5 installed (the Field Source base environment includes it when
+**OpenShift AI** is checked in step 0)
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
-`sso` in the `keycloak` namespace). Step 1 requires this. Steps 2, 4, and 5 can
+`sso` in the `keycloak` namespace). Step 1 requires this. Steps 2, 6, and 7 can
 instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
-- For GPU nodes (step 3): the NVIDIA GPU Operator and Node Feature Discovery
-installed. The Field Source base environment does not include them;
-`field-source-enable-all-features-35.sh` installs both.
+- For GPU nodes (step 3): the NVIDIA GPU Operator and Node Feature Discovery.
+The Field Source base environment does not include them; step 4
+(`field-source-enable-all-features-35.sh`) installs both. You can create and
+scale the GPU MachineSet before step 4; the node is labelled once step 4 finishes.
 - `bash`, `curl`, `python3` (step 3), and `sha256sum` or `shasum` (all present
 on macOS and most Linux distributions)
 
@@ -144,7 +166,7 @@ Adjust when your workshop differs:
 | Situation | What to do |
 | --------- | ---------- |
 | Other user counts | `--users <n>` applies the same formula (for example, 15 users gives 4 workers) |
-| Workers already more than 50% reserved before step 4 (`spin-up-workernodes.sh --dry-run` prints this) | Add one more: `--workers <recommended + 1>` |
+| Workers already more than 50% reserved before step 6 (`spin-up-workernodes.sh --dry-run` prints this) | Add one more: `--workers <recommended + 1>` |
 | `WORKBENCH_SIZE=Medium` (2 CPU / 8 GiB per Workbench) | `USERS_PER_WORKER=4 bash spin-up-workernodes.sh --users <n>` |
 | You want an exact node count | `--workers <n>` (total workers, not extra) |
 
@@ -268,7 +290,57 @@ The script is idempotent. `spin-up-workernodes.sh` ignores the GPU MachineSet.
 
 ---
 
-## Step 4: `setup_workbench_by_users.sh`
+## Step 4: `field-source-enable-all-features-35.sh`
+
+Turns on everything the labs use. It lives one folder up, in `scripts/`.
+
+```bash
+bash ../field-source-enable-all-features-35.sh
+```
+
+It:
+
+1. Installs the supporting operators: NFD, NVIDIA GPU Operator, cert-manager,
+   LeaderWorkerSet, OpenTelemetry, Tempo, Cluster Observability, and Dev Spaces
+2. Patches the `default-dsci` DSCInitialization and the `default-dsc`
+   DataScienceCluster to enable all components
+3. Deploys MLflow, a demo project, and the shared EvalHub. It waits for the
+   EvalHub CRD, applies the `evalhub-allow-tenant-jobs` NetworkPolicy that lets
+   participant evaluation jobs report status, and refreshes EvalHub's MLflow
+   probe if EvalHub started before MLflow
+4. Creates the MaaS Gateway, the dashboard menu, and accelerator rules
+5. Installs RHCL (Kuadrant and Authorino). This briefly disrupts ingress, so it
+   runs after everything else is configured
+6. Restarts the dashboard and prints a verification list. Items marked `[!!]`
+   are not ready yet
+
+It is idempotent. If a step times out or the terminal disconnects, re-run it;
+operators keep installing in the background. To skip operator installation on
+a re-run, use `--skip-install`.
+
+---
+
+## Step 5: `field-source-setup-maas-35.sh`
+
+Sets up Models-as-a-Service on top of the gateway and RHCL from step 4. It
+lives one folder up, in `scripts/`.
+
+```bash
+bash ../field-source-setup-maas-35.sh                                 # POC PostgreSQL in the cluster
+bash ../field-source-setup-maas-35.sh --postgres-connection <url>     # external PostgreSQL
+bash ../field-source-setup-maas-35.sh --skip-rate-limiting            # no Redis rate limiting
+```
+
+It deploys a POC PostgreSQL for MaaS (unless you pass `--postgres-connection`),
+configures Authorino TLS through the OpenShift service CA, and sets up Redis
+rate limiting (unless you pass `--skip-rate-limiting`). Participants then
+deploy models and create subscriptions from the dashboard.
+
+It does not add users to `rhods-admins`; step 1 does that.
+
+---
+
+## Step 6: `setup_workbench_by_users.sh`
 
 Creates one OpenShift AI Workbench per participant, using the
 **Jupyter | Data Science | CPU | Python 3.12** image.
@@ -297,7 +369,7 @@ existing one, delete it (`oc delete notebook my-workbench -n <user>`) and re-run
 
 ### EvalHub tenant setup
 
-Deploy EvalHub and MLflow first using `field-source-enable-all-features-35.sh`.
+Deploy EvalHub and MLflow first using `field-source-enable-all-features-35.sh` ([step 4](#step-4-field-source-enable-all-features-35sh)).
 The regular `bash setup_workbench_by_users.sh` command configures EvalHub tenants
 automatically after the Workbench creation loop and before URL lookup.
 It uses only users whose project, PVC, and Notebook were provisioned successfully,
@@ -379,7 +451,7 @@ or delete and re-create the Workbench.
 
 ---
 
-## Step 5: `deploy-showroom.sh`
+## Step 7: `deploy-showroom.sh`
 
 Deploys one Showroom lab guide per participant into the same `<username>`
 project as their Workbench. Each Showroom is personalized with the user's
@@ -394,11 +466,18 @@ the Showroom theme from GitHub.
 
 ```bash
 export SITE_TITLE="RHOAI Hands-on Workshop"
+export HOME_INDEX_FILE="$PWD/my-home.adoc"
 export WORKSHOPS="
 basic-inference|https://github.com/jingggg-wenn/rhoai-basic-inference-workshop|main|content|Basic Inference
+agentops|https://github.com/hyogrin/rhoai-basic-agentops-workshop|main|content|AgentOps Workshop
+evalhub|https://github.com/hyogrin/rhoai-basic-evalhub-workshop|main|content|Eval Hub Workshop
 "
 bash deploy-showroom.sh
 ```
+
+Run this from `scripts/workshop-prep`, so `$PWD/my-home.adoc` points to the
+sample home page in this folder. With three workshops, Showroom opens that home
+page, which links to each workshop.
 
 If Keycloak is not available, also set `WORKSHOP_USERS` and `USER_PASSWORD`.
 When `USER_PASSWORD` is unset, each user's own password is read from their
@@ -502,7 +581,8 @@ GitHub with `curl | bash`. Run this in your own terminal, logged in to the
 cluster, as above. Pass script arguments after `bash -s --`:
 
 ```bash
-BASE=https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts/workshop-prep
+SCRIPTS=https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts
+BASE=$SCRIPTS/workshop-prep
 
 # Step 1
 curl -sL "$BASE/setup_workshop_users_rbac.sh" | bash
@@ -514,9 +594,15 @@ curl -sL "$BASE/spin-up-workernodes.sh" | bash -s -- --users 30
 curl -sL "$BASE/gpu_machineset_hardwareprofiles.sh" | bash
 
 # Step 4
-curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+curl -sL "$SCRIPTS/field-source-enable-all-features-35.sh" | bash
 
 # Step 5
+curl -sL "$SCRIPTS/field-source-setup-maas-35.sh" | bash
+
+# Step 6
+curl -sL "$BASE/setup_workbench_by_users.sh" | bash
+
+# Step 7
 export SITE_TITLE="RHOAI Hands-on Workshop"
 export HOME_INDEX_FILE="$BASE/my-home.adoc"
 export WORKSHOPS="
