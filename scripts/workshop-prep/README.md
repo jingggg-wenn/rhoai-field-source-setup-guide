@@ -344,14 +344,11 @@ Sets up Models-as-a-Service on top of the gateway and RHCL from step 4. It
 lives one folder up, in `scripts/`.
 
 ```bash
-bash ../field-source-setup-maas-35.sh                                 # POC PostgreSQL in the cluster
-bash ../field-source-setup-maas-35.sh --postgres-connection <url>     # external PostgreSQL
-bash ../field-source-setup-maas-35.sh --skip-rate-limiting            # no Redis rate limiting
+bash ../field-source-setup-maas-35.sh
 ```
 
-It deploys a POC PostgreSQL for MaaS (unless you pass `--postgres-connection`),
-configures Authorino TLS through the OpenShift service CA, and sets up Redis
-rate limiting (unless you pass `--skip-rate-limiting`). Participants then
+It deploys a POC PostgreSQL for MaaS, configures Authorino TLS through the
+OpenShift service CA, and sets up Redis rate limiting. Participants then
 deploy models and create subscriptions from the dashboard.
 
 It does not add users to `rhods-admins`; step 1 does that.
@@ -363,13 +360,16 @@ It does not add users to `rhods-admins`; step 1 does that.
 Creates one OpenShift AI Workbench per participant, using the
 **Jupyter | Data Science | CPU | Python 3.12** image.
 
-```bash
-# Auto-discover users from Keycloak (skips admin)
-bash setup_workbench_by_users.sh
+To create Workbenches for every Keycloak user (admin is skipped):
 
-# Or give an explicit list
-export WORKSHOP_USERS="user1,user2,user3,user4"
+```bash
 bash setup_workbench_by_users.sh
+```
+
+To create Workbenches only for specific users:
+
+```bash
+WORKSHOP_USERS="user1,user2,user3,user4" bash setup_workbench_by_users.sh
 ```
 
 For each user it:
