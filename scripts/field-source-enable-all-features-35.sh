@@ -62,6 +62,14 @@
 #    ClusterPolicy sets dcgmExporter.serviceMonitor.enabled so cluster
 #    Prometheus scrapes GPU metrics. Existing ClusterPolicies are patched.
 #
+# 9. Web Terminal operator (end of Step 3a, idempotent, non-blocking).
+#    Skipped if the web-terminal CSV is Succeeded or a Subscription exists.
+#    Otherwise subscribes in openshift-operators (redhat-operators, catalog
+#    default channel). Web Terminal shares the DevWorkspace Operator with
+#    DevSpaces: no DWO Subscription is created, DevSpaces is never touched,
+#    and the install is deferred if DWO is mid-install or in another
+#    namespace. Never aborts the script; status is reported in Step 11.
+#
 # --------------------------------------------------------------------------
 # Execution order
 # --------------------------------------------------------------------------
@@ -73,6 +81,7 @@
 #    3a   | Install 8 non-disruptive operators            | None
 #         | (NFD, GPU, cert-manager, LWS, OTel,          |
 #         |  Tempo, COO, DevSpaces)                      |
+#         | + Web Terminal (skipped if present)           |
 #    3b   | Wait for operators + post-install CRs         | None
 #         | (NodeFeatureDiscovery, ClusterPolicy,         |
 #         |  LWS CR, UIPlugins, CheCluster)              |
@@ -206,6 +215,7 @@ echo -e "${BOLD}  ------|--------------------------------------------|----------
 echo "   1    | Prerequisites check                        | None"
 echo "   2    | User Workload Monitoring                   | None"
 echo "   3a   | Install 8 non-disruptive operators         | None"
+echo "        | + Web Terminal (skipped if present)        | None"
 echo "   3b   | Wait + post-install CRs                    | None"
 echo "   4    | DSCI merge patch (monitoring config)       | None (COO ready)"
 echo "   5    | DSC merge patch (all components)           | None (cert-mgr)"
@@ -343,6 +353,110 @@ check_operator_installed() {
 }
 
 ###############################################################################
+# Helper: install Web Terminal operator (idempotent, non-blocking)
+#
+# Mirrors the working install on a reference Field Source cluster:
+#   Subscription web-terminal in openshift-operators (global-operators OG,
+#   AllNamespaces), source redhat-operators, channel = catalog default (fast),
+#   installPlanApproval Automatic, no startingCSV.
+#
+# DevSpaces safety: Web Terminal and DevSpaces both depend on the
+# DevWorkspace Operator (DWO). This helper never creates a DWO Subscription
+# and never touches the DevSpaces Subscription/CheCluster. Web Terminal is
+# installed in the same namespace as DevSpaces (openshift-operators) so OLM
+# reuses the single existing DWO instead of creating a second one. If DWO is
+# mid-install/upgrade or lives in another namespace, the install is deferred.
+#
+# Every exit path returns 0 with a warn/info message, so a problem here never
+# aborts the rest of the script. No wait -- status is reported in Step 11.
+###############################################################################
+install_web_terminal() {
+    local WT_NS="openshift-operators"
+    local WT_PKG="web-terminal"
+    local WT_SRC="redhat-operators"
+
+    # 1. Already installed (CSV Succeeded) -> nothing to do
+    if bash -c 'oc get csv -n "'"$WT_NS"'" --no-headers 2>/dev/null | grep -q "^web-terminal\..*Succeeded"'; then
+        success "Web Terminal -- already installed, skipping"
+        return 0
+    fi
+
+    # 2. Subscription already exists (installing, or created by someone else) -> leave it alone
+    local WT_SUB_NS
+    WT_SUB_NS=$(oc get subscriptions.operators.coreos.com -A --no-headers 2>/dev/null \
+        | awk -v p="$WT_PKG" '$3==p {print $1; exit}' || true)
+    if [ -n "$WT_SUB_NS" ]; then
+        info "Web Terminal -- Subscription already exists in ${WT_SUB_NS} (CSV not Succeeded yet), not modifying"
+        return 0
+    fi
+
+    if [ "$SKIP_INSTALL" = true ]; then
+        warn "Web Terminal -- not installed, skipping (--skip-install)"
+        return 0
+    fi
+
+    # 3. Package must be available in the catalog
+    local WT_CH
+    WT_CH=$(oc get packagemanifest -n openshift-marketplace -l catalog="$WT_SRC" \
+        -o jsonpath='{.items[?(@.metadata.name=="'"$WT_PKG"'")].status.defaultChannel}' 2>/dev/null || true)
+    if [ -z "$WT_CH" ]; then
+        warn "Web Terminal -- package not found in ${WT_SRC} catalog, skipping (install manually from OperatorHub)"
+        return 0
+    fi
+
+    # 4. openshift-operators must have its AllNamespaces OperatorGroup (never create one there)
+    local OG_COUNT
+    OG_COUNT=$(oc get operatorgroup -n "$WT_NS" --no-headers 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$OG_COUNT" -ne 1 ]; then
+        warn "Web Terminal -- expected 1 OperatorGroup in ${WT_NS}, found ${OG_COUNT}; skipping"
+        return 0
+    fi
+
+    # 5. DevWorkspace Operator safety (shared with DevSpaces)
+    local DWO_SUB_NS
+    DWO_SUB_NS=$(oc get subscriptions.operators.coreos.com -A --no-headers 2>/dev/null \
+        | awk '$3=="devworkspace-operator" {print $1; exit}' || true)
+    if [ -n "$DWO_SUB_NS" ] && [ "$DWO_SUB_NS" != "$WT_NS" ]; then
+        warn "Web Terminal -- DevWorkspace Operator is subscribed in ${DWO_SUB_NS} (expected ${WT_NS}); skipping to avoid a duplicate DWO"
+        return 0
+    fi
+    local DWO_PHASE
+    DWO_PHASE=$(oc get csv -n "$WT_NS" --no-headers 2>/dev/null \
+        | awk '$1 ~ /^devworkspace-operator\./ {print $NF; exit}' || true)
+    if [ -n "$DWO_PHASE" ] && [ "$DWO_PHASE" != "Succeeded" ]; then
+        warn "Web Terminal -- DevWorkspace Operator is ${DWO_PHASE} (shared with DevSpaces); deferring. Re-run the script later."
+        return 0
+    fi
+    if [ -n "$DWO_PHASE" ]; then
+        info "DevWorkspace Operator already present (shared with DevSpaces) -- OLM will reuse it"
+    else
+        info "DevWorkspace Operator not present -- OLM will resolve it as a Web Terminal dependency"
+    fi
+
+    # 6. Create the Subscription (create and fire)
+    info "Installing Web Terminal (ns=${WT_NS}, ch=${WT_CH}, src=${WT_SRC}, mode=skip)..."
+    if oc apply -f - <<EOF
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ${WT_PKG}
+  namespace: ${WT_NS}
+spec:
+  channel: ${WT_CH}
+  installPlanApproval: Automatic
+  name: ${WT_PKG}
+  source: ${WT_SRC}
+  sourceNamespace: openshift-marketplace
+EOF
+    then
+        success "Web Terminal Subscription created (installing in background, verified in Step 11)"
+    else
+        warn "Web Terminal -- Subscription apply failed; continuing (install manually from OperatorHub)"
+    fi
+    return 0
+}
+
+###############################################################################
 # Step 1: Prerequisites (abort if missing)
 ###############################################################################
 info "=== Step 1/11: Prerequisites ==="
@@ -475,6 +589,12 @@ if [ ${#MISSING_NAMES[@]} -gt 0 ]; then
 else
     success "All non-disruptive operators already installed"
 fi
+echo ""
+
+# Web Terminal -- after the loop so DevSpaces (and its DevWorkspace Operator)
+# has settled first. Non-blocking: never aborts the script, no wait.
+info "Web Terminal operator:"
+install_web_terminal || warn "Web Terminal -- unexpected error, continuing"
 echo ""
 
 ###############################################################################
@@ -1832,6 +1952,18 @@ else
     fi
     NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
     NOT_READY_ITEMS+=("RHCL")
+fi
+# Web Terminal (separate check)
+if bash -c 'oc get csv -n openshift-operators --no-headers 2>/dev/null | grep -q "^web-terminal\..*Succeeded"'; then
+    echo -e "  ${GREEN}[OK]${NC} Web Terminal"
+else
+    if bash -c 'oc get subscriptions.operators.coreos.com -A --no-headers 2>/dev/null | awk '"'"'$3=="web-terminal"'"'"' | grep -q .'; then
+        echo -e "  ${YELLOW}[..]${NC} Web Terminal (installing)"
+    else
+        echo -e "  ${RED}[!!]${NC} Web Terminal (not installed)"
+    fi
+    NOT_READY_COUNT=$((NOT_READY_COUNT + 1))
+    NOT_READY_ITEMS+=("Web Terminal")
 fi
 KUADRANT_LIVE_LIMIT=$(oc get deploy kuadrant-operator-controller-manager -n redhat-connectivity-link-operator \
     -o jsonpath='{.spec.template.spec.containers[0].resources.limits.memory}' 2>/dev/null || true)
