@@ -21,11 +21,14 @@
 #    new InstallPlans that wait for manual approval and are never approved
 #    by this script.
 #
-# 2. No downgrades.
-#    OLM cannot downgrade an operator. If RHOAI is already installed at a
-#    different version, the script stops and explains the options. If it is
-#    installed at the requested version, the script only switches the
-#    Subscription to Manual approval and makes sure DSCI/DSC exist.
+# 2. Fresh installs only.
+#    If an RHOAI operator (CSV or rhods-operator Subscription) already exists
+#    on the cluster, the script reports it and exits without changing
+#    anything -- before asking for a version. OLM cannot downgrade or switch
+#    an installed operator, so re-running is always safe. One exception: if
+#    the operator is Succeeded but no DataScienceCluster exists (for example
+#    after an interrupted run), default-dsc is created with `oc create`.
+#    An existing DSC (any name) is never modified or replaced.
 #
 # 3. Version must exist in the catalog.
 #    The requested CSV is checked against the channel entries in the
@@ -60,7 +63,7 @@
 # --------------------------------------------------------------------------
 #
 #   bash install-rhoai-operator.sh
-#     -> prompts: RHOAI version to install [3.5.2]:
+#     -> prompts: press Enter for 3.5.2, or type another version to override
 #
 #   RHOAI_VERSION=3.5.2 bash install-rhoai-operator.sh     # no prompt
 #   RHOAI_VERSION=3.5.2 RHOAI_CHANNEL=eus-3.5 bash install-rhoai-operator.sh
@@ -78,7 +81,7 @@
 #
 #   - oc login completed with cluster-admin
 #   - redhat-operators catalog available in openshift-marketplace
-#   - RHOAI not installed, or installed at the requested version
+#   - RHOAI not installed (the script exits if it is already present)
 #
 # Created: 15 Nov 2026
 # Last modified: 25 Nov 2026
@@ -160,6 +163,7 @@ resolve_version() {
     local answer=""
     if [[ -z "${RHOAI_VERSION:-}" ]]; then
         if { exec 3<>/dev/tty; } 2>/dev/null; then
+            echo "Press Enter to install the default version (${DEFAULT_RHOAI_VERSION}, tested), or type another version (for example 3.5.4) to override." >&3
             read -r -u 3 -p "RHOAI version to install [${DEFAULT_RHOAI_VERSION}]: " answer || true
             exec 3>&-
         else
@@ -194,35 +198,87 @@ installed_rhods_csv() {
 }
 
 ###############################################################################
+# Helper: existing_rhods_subscription -- "namespace|installedCSV|approval" of
+# any Subscription for the rhods-operator package (empty if none)
+###############################################################################
+existing_rhods_subscription() {
+    local line ns pkg csv approval
+    while IFS='|' read -r ns pkg csv approval; do
+        if [[ "$pkg" == "$PACKAGE" ]]; then
+            echo "${ns}|${csv}|${approval}"
+            return 0
+        fi
+    done <<<"$(oc get subscriptions.operators.coreos.com -A \
+        -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.spec.name}{"|"}{.status.installedCSV}{"|"}{.spec.installPlanApproval}{"\n"}{end}' \
+        2>/dev/null || true)"
+    return 0
+}
+
+###############################################################################
+# Helper: ensure_default_dsc <csv> <csv_namespace>
+#
+# Creates DataScienceCluster 'default-dsc' from the CSV's own default
+# (initialization-resource) ONLY if no DataScienceCluster exists at all.
+# Uses `oc create` (never apply), so an existing DSC is never modified.
+# Returns 0 if default-dsc exists afterwards, 1 otherwise.
+###############################################################################
+ensure_default_dsc() {
+    local csv="$1" csv_ns="$2" existing dsc_json
+    existing=$(oc get datasciencecluster -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+    if [[ " ${existing} " == *" default-dsc "* ]]; then
+        info "DataScienceCluster default-dsc already exists -- leaving in place"
+        return 0
+    fi
+    if [[ -n "$existing" ]]; then
+        # RHOAI allows only one DSC; never create a second one.
+        error "A different DataScienceCluster already exists: ${existing}"
+        echo "  RHOAI allows only one DSC, so default-dsc was not created."
+        echo "  field-source-enable-all-features-35.sh expects it to be named default-dsc."
+        return 1
+    fi
+
+    dsc_json=$(oc get csv "$csv" -n "$csv_ns" \
+        -o jsonpath='{.metadata.annotations.operatorframework\.io/initialization-resource}' 2>/dev/null || true)
+    if [[ -n "$dsc_json" && "$dsc_json" == *'"DataScienceCluster"'* && "$dsc_json" == *'"default-dsc"'* ]]; then
+        if oc create -f - >/dev/null <<<"$dsc_json"; then
+            success "DataScienceCluster: default-dsc (operator default for ${csv#"${PACKAGE}".})"
+            return 0
+        fi
+    else
+        warn "CSV has no default DSC -- creating a minimal default-dsc"
+        if oc create -f - >/dev/null <<EOF
+apiVersion: datasciencecluster.opendatahub.io/v2
+kind: DataScienceCluster
+metadata:
+  name: default-dsc
+spec:
+  components:
+    dashboard:
+      managementState: Managed
+    workbenches:
+      managementState: Managed
+EOF
+        then
+            success "DataScienceCluster: default-dsc (minimal: dashboard + workbenches)"
+            return 0
+        fi
+    fi
+    # Lost a race with someone else creating it? Then that is fine too.
+    if oc get datasciencecluster default-dsc &>/dev/null; then
+        info "DataScienceCluster default-dsc was created by someone else -- leaving in place"
+        return 0
+    fi
+    error "Could not create DataScienceCluster default-dsc"
+    return 1
+}
+
+###############################################################################
 # Helper: list_installplans -- "name|approved|csv1,csv2" per line
 ###############################################################################
 list_installplans() {
     oc get installplan -n "$OPERATOR_NS" \
         -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.spec.approved}{"|"}{range .spec.clusterServiceVersionNames[*]}{@}{","}{end}{"\n"}{end}' \
         2>/dev/null || true
-}
-
-###############################################################################
-# Helper: set_manual_approval -- switch the Subscription to Manual (idempotent)
-###############################################################################
-set_manual_approval() {
-    local approval
-    approval=$(oc get subscription "$SUB_NAME" -n "$OPERATOR_NS" \
-        -o jsonpath='{.spec.installPlanApproval}' 2>/dev/null || true)
-    if [[ -z "$approval" ]]; then
-        warn "Subscription '${SUB_NAME}' not found in ${OPERATOR_NS} -- cannot pin upgrades"
-        return 0
-    fi
-    if [[ "$approval" == "Manual" ]]; then
-        success "Subscription upgrades already require manual approval"
-        return 0
-    fi
-    if oc patch subscription "$SUB_NAME" -n "$OPERATOR_NS" --type=merge \
-        -p '{"spec":{"installPlanApproval":"Manual"}}' >/dev/null; then
-        success "Subscription switched to installPlanApproval: Manual (no automatic upgrades)"
-    else
-        warn "Could not switch Subscription '${SUB_NAME}' to Manual approval"
-    fi
 }
 
 echo "=============================================="
@@ -259,31 +315,62 @@ if [[ "$(oc auth can-i create subscriptions.operators.coreos.com -n "$OPERATOR_N
 fi
 success "cluster-admin permissions"
 
+# Idempotency: an existing RHOAI install is never reinstalled, upgraded or
+# reconfigured. The only thing added is a missing default-dsc (for example,
+# after an interrupted run), and only once the operator is fully installed.
+EXISTING_CSV=$(installed_rhods_csv)
+EXISTING_SUB=$(existing_rhods_subscription)
+if [[ -n "$EXISTING_CSV" || -n "$EXISTING_SUB" ]]; then
+    IFS='|' read -r SUB_NS SUB_CSV SUB_APPROVAL <<<"${EXISTING_SUB:-||}"
+    FOUND_CSV="${EXISTING_CSV:-$SUB_CSV}"
+    CSV_NS="${SUB_NS:-$OPERATOR_NS}"
+    warn "RHOAI operator is already present on this cluster -- not reinstalling."
+    echo "  Version      : ${FOUND_CSV#"${PACKAGE}".}"
+    if [[ -n "$EXISTING_SUB" ]]; then
+        echo "  Subscription : ${SUB_NS}/${PACKAGE}"
+    else
+        echo "  Subscription : none (operator installed without a Subscription)"
+    fi
+    echo "  Approval     : ${SUB_APPROVAL:-unknown}"
+    echo ""
+
+    CSV_PHASE=""
+    if [[ -n "$FOUND_CSV" ]]; then
+        CSV_PHASE=$(oc get csv "$FOUND_CSV" -n "$CSV_NS" \
+            -o jsonpath='{.status.phase}' 2>/dev/null || true)
+    fi
+    if [[ "$CSV_PHASE" != "Succeeded" ]]; then
+        warn "Operator is not fully installed yet (${FOUND_CSV:-no CSV}: ${CSV_PHASE:-pending})."
+        echo "  Nothing was changed. Re-run this script once it shows Succeeded:"
+        echo "    oc get csv -n ${CSV_NS}"
+        exit 0
+    fi
+    success "${FOUND_CSV} Succeeded"
+
+    if ! wait_for 120 "DSCInitialization default-dsci" 'oc get dscinitialization default-dsci'; then
+        error "default-dsci not found. The operator normally creates it; check the operator logs:"
+        echo "    oc logs -n ${CSV_NS} deployment/rhods-operator"
+        exit 1
+    fi
+
+    ensure_default_dsc "$FOUND_CSV" "$CSV_NS" || exit 1
+
+    if [[ "${SUB_APPROVAL:-}" != "Manual" && -n "$EXISTING_SUB" ]]; then
+        echo ""
+        warn "Upgrades are automatic (not pinned). To stop automatic upgrades:"
+        echo "    oc patch subscription ${PACKAGE} -n ${SUB_NS} --type merge -p '{\"spec\":{\"installPlanApproval\":\"Manual\"}}'"
+    fi
+    echo ""
+    exit 0
+fi
+success "RHOAI operator not installed yet"
+
 resolve_version
 TARGET_CSV="${PACKAGE}.${RHOAI_VERSION}"
 RHOAI_CHANNEL="${RHOAI_CHANNEL:-stable-${RHOAI_VERSION%.*}}"
 success "Target: ${TARGET_CSV} (channel ${RHOAI_CHANNEL})"
-
-ALREADY_INSTALLED=false
-EXISTING_CSV=$(installed_rhods_csv)
-if [[ -n "$EXISTING_CSV" ]]; then
-    if [[ "$EXISTING_CSV" == "$TARGET_CSV" ]]; then
-        ALREADY_INSTALLED=true
-        success "RHOAI ${RHOAI_VERSION} already installed -- skipping Steps 2-5"
-    else
-        error "RHOAI is already installed at a different version: ${EXISTING_CSV#"${PACKAGE}".}"
-        echo "  OLM cannot downgrade or switch an installed operator to ${RHOAI_VERSION}."
-        echo "  Options:"
-        echo "    - Keep ${EXISTING_CSV#"${PACKAGE}".} and stop further upgrades:"
-        echo "        oc patch subscription ${SUB_NAME} -n ${OPERATOR_NS} --type merge -p '{\"spec\":{\"installPlanApproval\":\"Manual\"}}'"
-        echo "    - Re-run with RHOAI_VERSION=${EXISTING_CSV#"${PACKAGE}".} to keep it and pin it"
-        echo "    - Uninstall RHOAI completely, then re-run this script"
-        exit 1
-    fi
-fi
 echo ""
 
-if [[ "$ALREADY_INSTALLED" == false ]]; then
 
 ###############################################################################
 # Step 2: Catalog check
@@ -343,16 +430,6 @@ EOF
     success "OperatorGroup: ${OPERATOR_NS}-og (all namespaces)"
 else
     info "OperatorGroup already exists in ${OPERATOR_NS} -- skipping creation"
-fi
-
-EXISTING_START=$(oc get subscription "$SUB_NAME" -n "$OPERATOR_NS" \
-    -o jsonpath='{.spec.startingCSV}' 2>/dev/null || true)
-if oc get subscription "$SUB_NAME" -n "$OPERATOR_NS" &>/dev/null \
-    && [[ "$EXISTING_START" != "$TARGET_CSV" ]]; then
-    error "Subscription '${SUB_NAME}' already exists with startingCSV '${EXISTING_START:-<none>}'"
-    echo "  It was not created by this script for ${TARGET_CSV}. Delete it first:"
-    echo "    oc delete subscription ${SUB_NAME} -n ${OPERATOR_NS}"
-    exit 1
 fi
 
 oc apply -f - >/dev/null <<EOF
@@ -422,11 +499,7 @@ if ! wait_for 600 "${TARGET_CSV} Succeeded" \
 fi
 echo ""
 
-fi  # ALREADY_INSTALLED == false
 
-# Pin upgrades (also covers an existing install at the requested version).
-set_manual_approval
-echo ""
 
 ###############################################################################
 # Step 6: DSCInitialization + DataScienceCluster
@@ -464,41 +537,7 @@ EOF
     fi
 fi
 
-if oc get datasciencecluster default-dsc &>/dev/null; then
-    info "DataScienceCluster default-dsc already exists -- leaving in place"
-else
-    # Use the operator's own default DSC for this version (same as the console).
-    DSC_JSON=$(oc get csv "$TARGET_CSV" -n "$OPERATOR_NS" \
-        -o jsonpath='{.metadata.annotations.operatorframework\.io/initialization-resource}' 2>/dev/null || true)
-    if [[ -n "$DSC_JSON" && "$DSC_JSON" == *'"default-dsc"'* ]]; then
-        if oc apply -f - >/dev/null <<<"$DSC_JSON"; then
-            success "DataScienceCluster: default-dsc (operator default for ${RHOAI_VERSION})"
-        else
-            error "Could not create DataScienceCluster default-dsc"
-            exit 1
-        fi
-    else
-        warn "CSV has no default DSC -- creating a minimal default-dsc"
-        if oc apply -f - >/dev/null <<EOF
-apiVersion: datasciencecluster.opendatahub.io/v2
-kind: DataScienceCluster
-metadata:
-  name: default-dsc
-spec:
-  components:
-    dashboard:
-      managementState: Managed
-    workbenches:
-      managementState: Managed
-EOF
-        then
-            success "DataScienceCluster: default-dsc (minimal: dashboard + workbenches)"
-        else
-            error "Could not create DataScienceCluster default-dsc"
-            exit 1
-        fi
-    fi
-fi
+ensure_default_dsc "$TARGET_CSV" "$OPERATOR_NS" || exit 1
 
 # Short wait only: some default components (for example kserve, trainer) may
 # not report Ready until field-source-enable-all-features-35.sh installs their
