@@ -2,6 +2,7 @@
 
 Created: 04 Nov 2026
 Last modified: 25 Nov 2026
+Last verified: 25 Nov 2026, on RHOAI 3.5.2 (OpenShift 4.22)
 
 Scripts that set up Red Hat OpenShift AI 3.5 on a **Field Source** cluster and
 prepare it for a hands-on workshop. Tested on RHOAI 3.5.2 and OpenShift 4.22.
@@ -14,11 +15,30 @@ prepare it for a hands-on workshop. Tested on RHOAI 3.5.2 and OpenShift 4.22.
 | You are | Go to | What it covers |
 | ------- | ----- | -------------- |
 | **Administrator** preparing a workshop | [`scripts/workshop-prep/README.md`](scripts/workshop-prep/README.md) | Ordering the environment, sizing, and setting up per-user Workbenches, GPU nodes, and Showroom lab guides |
-| **User / participant** setting up a cluster | [`scripts/WORKSHOP-SETUP.md`](scripts/WORKSHOP-SETUP.md) ([한국어](scripts/WORKSHOP-SETUP_KR.md)) | Opening the Web Terminal and running the two setup scripts below |
+| **User / participant** setting up a cluster | [`scripts/WORKSHOP-SETUP.md`](scripts/WORKSHOP-SETUP.md) ([한국어](scripts/WORKSHOP-SETUP_KR.md)) | Opening the Web Terminal and running the setup scripts below |
 
-## The two setup scripts
+## The setup scripts
 
-`WORKSHOP-SETUP.md` runs these in order. Both are safe to re-run.
+Run them in order. All are safe to re-run.
+
+Order the environment with **OpenShift AI unticked**, so that Script 0 installs
+RHOAI pinned to the tested version. If RHOAI is already installed, Script 0
+reports it and exits without changing it.
+
+### Script 0: [`workshop-prep/install-rhoai-operator.sh`](scripts/workshop-prep/install-rhoai-operator.sh)
+
+Installs the RHOAI operator pinned to one version (default 3.5.2). Later
+upgrades wait for manual approval.
+
+| Step | What it does |
+| ---- | ------------ |
+| 1 | Prerequisites, existing RHOAI check, and version prompt (press Enter for 3.5.2) |
+| 2 | Check that the version is in the catalog channel (`stable-3.5`) |
+| 3 | Namespace, OperatorGroup, and Subscription (Manual approval) |
+| 4 | Approve only the InstallPlan for the pinned version |
+| 5 | Wait for the operator to install |
+| 6 | DSCInitialization `default-dsci` and DataScienceCluster `default-dsc` |
+| 7 | Verification, including newer versions left unapproved |
 
 ### Script 1: `field-source-enable-all-features-35.sh`
 
@@ -51,4 +71,4 @@ Sets up Models-as-a-Service (MaaS). Run after Script 1 completes.
 | 4 | Kuadrant AuthPolicy reconciliation |
 | 5 | Verification |
 
-Sample output from both scripts is in [`output-log/`](output-log/).
+Sample output from Scripts 1 and 2 is in [`output-log/`](output-log/).

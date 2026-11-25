@@ -1,7 +1,8 @@
 # Workshop Preparation Scripts (Administrators)
 
-Created: 2026-11-04
-Last modified: 2026-11-25
+Created: 2026-11-04  
+Last modified: 2026-11-25  
+Last verified run: 2026-11-25, on RHOAI 3.5.2 (OpenShift 4.22)
 
 Scripts that prepare a Field Source OpenShift AI (RHOAI 3.5) cluster for a
 hands-on workshop. Each participant gets their own **Workbench** and **Showroom**
@@ -15,7 +16,7 @@ Keycloak username (`user1`, `user2`, ...).
 > `deploy-showroom.sh` changes the cluster's ingress settings, either of which can
 > end a Web Terminal session part-way through.
 
-## Step 0: Order the environment
+## Before you start: order the environment
 
 Order the Field Source base environment from the
 [Red Hat Demo Platform (RHDP)](https://demo.redhat.com) with these settings: **Field Sourced Content - OpenShift (Shared Clusters)**
@@ -26,18 +27,23 @@ Order the Field Source base environment from the
 > be as low as **64 vCPU**, which leaves little room for GPU nodes. Worker nodes
 > (`m5a.4xlarge`) are a different instance type and do not count toward this limit.
 
+> **Leave OpenShift AI unticked** under **Select Base Workloads** (outlined in
+> red below). RHOAI is installed in [step 0](#step-0-install-rhoai-operatorsh)
+> instead, pinned to the tested version (3.5.2), so a newer RHOAI release cannot
+> change the environment.
+
 ![Field Source order form](../../images/img-env-provision.png)
 
-| Field                          | Value                                                           | Notes                                                                       |
-| ------------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| Cloud Provider                 | `aws`                                                           |                                                                             |
-| cluster_size                   | `multinode`                                                     | Not SNO. The workshop scripts expect worker MachineSets.                    |
-| OpenShift Version              | `4.22`                                                          |                                                                             |
-| OpenShift Worker count         | `5`                                                             | Size this for your user count. See [Sizing](#sizing-how-many-worker-nodes). |
-| OpenShift Worker instance type | `m5a.4xlarge`                                                   | 16 vCPU, 64 GiB. The sizing guide assumes this type.                        |
-| Enable OPEN Environment?       | **checked**                                                     | Avoids the lower G/VT (GPU) vCPU limit. See the note below.                 |
-| Select Base Workloads          | **OpenShift AI** checked; Ansible Automation Platform unchecked |                                                                             |
-| Create users on cluster?       | checked, `30`                                                   | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.      |
+| Field                          | Value                                                             | Notes                                                                                                                               |
+| ------------------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Cloud Provider                 | `aws`                                                             |                                                                                                                                     |
+| cluster_size                   | `multinode`                                                       | Not SNO. The workshop scripts expect worker MachineSets.                                                                            |
+| OpenShift Version              | `4.22`                                                            |                                                                                                                                     |
+| OpenShift Worker count         | `5`                                                               | Size this for your user count. See [Sizing](#sizing-how-many-worker-nodes).                                                         |
+| OpenShift Worker instance type | `m5a.4xlarge`                                                     | 16 vCPU, 64 GiB. The sizing guide assumes this type.                                                                                |
+| Enable OPEN Environment?       | **checked**                                                       | Avoids the lower G/VT (GPU) vCPU limit. See the note below.                                                                         |
+| Select Base Workloads          | **OpenShift AI unchecked**; Ansible Automation Platform unchecked | RHOAI is installed by [step 0](#step-0-install-rhoai-operatorsh), pinned to a specific version with Manual upgrade approval needed. |
+| Create users on cluster?       | checked, `30`                                                     | Creates `user1`..`user30` in Keycloak. 30 is the maximum for this env.                                                              |
 
 > **Note: G/VT vCPU limit.** Without the OPEN environment, the vCPU limit for
 > G and VT instance types can be as low as **64 vCPU**. Each GPU node in
@@ -72,16 +78,21 @@ Step 2 is optional. Steps 4 and 5 live one folder up (`scripts/`).
 
 | Step | Script | What it does | Arguments to set | Time |
 | ---- | ------ | ------------ | ---------------- | ---- |
+| 0 | [`install-rhoai-operator.sh`](install-rhoai-operator.sh) | Installs the RHOAI operator pinned to one version (upgrades wait for manual approval) and creates `default-dsc` | Press Enter for 3.5.2 (tested), or set `RHOAI_VERSION` | 2–5 min |
 | 1 | [`setup_workshop_users_rbac.sh`](setup_workshop_users_rbac.sh) | Grants each Keycloak user `cluster-admin` and adds them to `rhods-admins` | None | Seconds |
 | 2 *(optional)* | [`spin-up-workernodes.sh`](spin-up-workernodes.sh) | Adds worker nodes. Only needed if you ordered fewer workers than the [sizing table](#sizing-how-many-worker-nodes) recommends. | `--users <n>`; preview first with `--dry-run` | 5–15 min |
 | 3 | [`gpu_machineset_hardwareprofiles.sh`](gpu_machineset_hardwareprofiles.sh) | Creates a GPU MachineSet (0 nodes) and the `gpu-profile` HardwareProfile that participants select to deploy models on a GPU | None. Then scale the GPU MachineSet up (see [step 3](#step-3-gpu_machineset_hardwareprofilessh)) | 1 min, plus 15–20 min per GPU node |
-| 4 | [`../field-source-enable-all-features-35.sh`](../field-source-enable-all-features-35.sh) | Installs the supporting operators (including NFD and the GPU Operator), enables all DSC components, and deploys MLflow and the shared EvalHub | None | 20–40 min on a fresh cluster |
+| 4 | [`../field-source-enable-all-features-35.sh`](../field-source-enable-all-features-35.sh) | Installs the supporting operators (including NFD and the GPU Operator), enables the DSC components, and deploys MLflow and the shared EvalHub | None | 20–40 min on a fresh cluster |
 | 5 | [`../field-source-setup-maas-35.sh`](../field-source-setup-maas-35.sh) | Sets up Models-as-a-Service: PostgreSQL, Authorino TLS, and rate limiting | Optional: `--postgres-connection <url>`, `--skip-rate-limiting` | A few minutes |
 | 6 | [`setup_workbench_by_users.sh`](setup_workbench_by_users.sh) | Creates a project, PVC, and Jupyter Workbench for each user and configures EvalHub tenants | Optional: `WORKSHOP_USERS`, `WORKBENCH_SIZE` | 1–2 min, plus tenant verification |
 | 7 | [`deploy-showroom.sh`](deploy-showroom.sh) | Deploys a Showroom lab guide per user, with Workbench, Console, and Dashboard tabs | **Required:** `WORKSHOPS`. Recommended: `SITE_TITLE`, `HOME_INDEX_FILE` | 5–10 min |
 
 Why this order:
 
+- **RHOAI first (step 0).** Every later step needs it: step 3 creates an RHOAI
+`HardwareProfile`, and step 4 expects the operator, `default-dsci`, and
+`default-dsc` to exist. Step 0 pins RHOAI to the tested version, so a new
+release cannot change the environment between your test run and the workshop.
 - **Infrastructure before users (steps 2 and 3).** Nodes are the slowest part.
 If you use step 2, run it before the Workbenches: Workbench pods start as soon
 as they are created, and if the new nodes are not Ready yet, the first
@@ -127,11 +138,13 @@ bash spin-up-workernodes.sh --users 4
 - Already logged in to the cluster as a cluster-admin. Check with `oc whoami`
 (it should print your admin user) and `oc whoami --show-server` (it should
 print this cluster's API URL).
-- The environment ordered with **Enable OPEN Environment?** checked (step 0).
+- The environment ordered with **Enable OPEN Environment?** checked (see
+[Before you start](#before-you-start-order-the-environment)).
 Without it, the vCPU limit for G and VT instance types (GPU nodes) can be
 64 vCPU, which limits how many GPU nodes you can add.
-- RHOAI 3.5 installed (the Field Source base environment includes it when
-**OpenShift AI** is checked in step 0)
+- RHOAI **not** installed yet (environment ordered with **OpenShift AI**
+unticked). [Step 0](#step-0-install-rhoai-operatorsh) installs it. If RHOAI is
+already installed, step 0 reports the version and exits without changing it.
 - Workshop users already provisioned in Keycloak (a `KeycloakRealmImport` CR named
 `sso` in the `keycloak` namespace). Step 1 requires this. Steps 2, 6, and 7 can
 instead take a user count or an explicit list (`--users`, `WORKSHOP_USERS`).
@@ -144,7 +157,8 @@ on macOS and most Linux distributions)
 
 ## Sizing: how many worker nodes
 
-Use this table to choose **OpenShift Worker count** when you order (step 0).
+Use this table to choose **OpenShift Worker count** when you order (see
+[Before you start](#before-you-start-order-the-environment)).
 The counts are total workers, including the ones that run the RHOAI platform.
 
 | Users | Workbenches reserve | Workers to order | If already running, add with |
@@ -155,7 +169,7 @@ The counts are total workers, including the ones that run the RHOAI platform.
 
 Each `m5a.4xlarge` costs about $0.69/hour on demand in us-east.
 
-> **5 workers for 30 users** (the step 0 example) fits about 28 users by this
+> **5 workers for 30 users** (the order-form example) fits about 28 users by this
 > estimate. That is usually fine, but it leaves little headroom. Order 6, or
 > run `bash spin-up-workernodes.sh --users 30` after provisioning to add one more.
 
@@ -188,7 +202,7 @@ separately in [step 3](#step-3-gpu_machineset_hardwareprofilessh).
 ## GPU vCPU limit: requesting more
 
 GPU nodes count against the AWS quota **Running On-Demand G and VT instances**,
-measured in vCPU. As noted in [step 0](#step-0-order-the-environment), it can be
+measured in vCPU. As noted in [Before you start](#before-you-start-order-the-environment), it can be
 as low as **64 vCPU**, which is at most 8 `g6.2xlarge` GPU nodes (8 vCPU each).
 
 | GPU nodes you plan | vCPU needed | Action |
@@ -201,6 +215,52 @@ finding the cluster's region, signing in to the AWS console with the RHDP
 credentials, submitting the Service Quotas request, following the AWS Support
 case, and how long the new limit takes to be provisioned before you scale the
 GPU MachineSet.
+
+---
+
+## Step 0: `install-rhoai-operator.sh`
+
+Installs the RHOAI operator, pinned to one version.
+
+```bash
+bash install-rhoai-operator.sh
+```
+
+It asks which version to install. Press Enter to use **3.5.2**, the version
+these scripts are tested on, or type another version to override. To skip the
+prompt, set the version up front: `RHOAI_VERSION=3.5.2 bash install-rhoai-operator.sh`.
+
+It:
+
+1. Checks whether RHOAI is already installed. If it is, it reports the version
+
+   and exits without reinstalling or upgrading it (see below)
+2. Checks that the version is available in the `stable-3.5` channel
+3. Creates the `redhat-ods-operator` namespace, OperatorGroup, and a
+
+   Subscription with **Manual** approval, starting at that version
+4. Approves only the InstallPlan for that version
+5. Waits for the operator to finish installing
+6. Waits for `default-dsci` (created by the operator) and creates
+
+   `default-dsc` from the operator's own default for that version
+7. Prints a verification list, including any newer version waiting for approval
+
+Newer releases (for example 3.5.4) show up as a pending InstallPlan that is
+**not** approved. That is expected; do not approve it during a workshop.
+
+`default-dsc` is not Ready at the end of this step. That is expected: some
+components wait for operators that step 4 installs.
+
+It is idempotent. On a re-run, or on a cluster where RHOAI is already
+installed, it changes nothing, except that it creates `default-dsc` if the
+operator is installed but no DataScienceCluster exists (for example, after an
+interrupted run). It never modifies an existing DataScienceCluster.
+
+| Variable | Default | Description |
+| -------- | ------- | ----------- |
+| `RHOAI_VERSION` | prompt, default `3.5.2` | Version to install, in the form `X.Y.Z` |
+| `RHOAI_CHANNEL` | `stable-<major>.<minor>` (for example `stable-3.5`) | OLM channel |
 
 ---
 
@@ -288,13 +348,15 @@ bash gpu_machineset_hardwareprofiles.sh
 It:
 
 1. Creates a GPU MachineSet named `<infra-id>-worker-gpu-<az>` with **0 nodes**.
+
    Each node is a `g6.2xlarge` (1 NVIDIA L4 GPU with 24 GB, 8 vCPU, 32 GiB),
-   in the same zone and subnet as an existing worker. GPU nodes are tainted
-   (`nvidia.com/gpu=True:NoSchedule`), so only GPU workloads run on them.
+    in the same zone and subnet as an existing worker. GPU nodes are tainted
+    (`nvidia.com/gpu=True:NoSchedule`), so only GPU workloads run on them.
 2. Creates the `gpu-profile (L4)` HardwareProfile in `redhat-ods-applications`,
+
    or fixes it if it already exists. Participants select it when deploying a
-   model. It allows 1–8 CPU, 1–16 GiB memory, and 1–4 GPUs, and targets nodes
-   labelled `nvidia.com/gpu.present=true` with the matching toleration.
+    model. It allows 1–8 CPU, 1–16 GiB memory, and 1–4 GPUs, and targets nodes
+    labelled `nvidia.com/gpu.present=true` with the matching toleration.
 
 The script does not start any GPU nodes. Scale the MachineSet up yourself:
 
@@ -329,6 +391,7 @@ The script is idempotent. `spin-up-workernodes.sh` ignores the GPU MachineSet.
 ## Step 4: `field-source-enable-all-features-35.sh`
 
 Turns on everything the labs use. It lives one folder up, in `scripts/`.
+It needs the RHOAI operator, `default-dsci`, and `default-dsc` from step 0.
 
 ```bash
 bash ../field-source-enable-all-features-35.sh
@@ -337,17 +400,23 @@ bash ../field-source-enable-all-features-35.sh
 It:
 
 1. Installs the supporting operators: NFD, NVIDIA GPU Operator, cert-manager,
+
    LeaderWorkerSet, OpenTelemetry, Tempo, Cluster Observability, and Dev Spaces
 2. Patches the `default-dsci` DSCInitialization and the `default-dsc`
-   DataScienceCluster to enable all components
+
+   DataScienceCluster to enable the components the labs use (Kueue and
+    Trainer stay off)
 3. Deploys MLflow, a demo project, and the shared EvalHub. It waits for the
+
    EvalHub CRD, applies the `evalhub-allow-tenant-jobs` NetworkPolicy that lets
-   participant evaluation jobs report status, and refreshes EvalHub's MLflow
-   probe if EvalHub started before MLflow
+    participant evaluation jobs report status, and refreshes EvalHub's MLflow
+    probe if EvalHub started before MLflow
 4. Creates the MaaS Gateway, the dashboard menu, and accelerator rules
 5. Installs RHCL (Kuadrant and Authorino). This briefly disrupts ingress, so it
+
    runs after everything else is configured
 6. Restarts the dashboard and prints a verification list. Items marked `[!!]`
+
    are not ready yet
 
 It is idempotent. If a step times out or the terminal disconnects, re-run it;
@@ -619,6 +688,9 @@ cluster, as above. Pass script arguments after `bash -s --`:
 ```bash
 SCRIPTS=https://raw.githubusercontent.com/jingggg-wenn/rhoai-field-source-setup-guide/refs/heads/main/scripts
 BASE=$SCRIPTS/workshop-prep
+
+# Step 0 (RHOAI_VERSION skips the prompt)
+curl -sL "$BASE/install-rhoai-operator.sh" | RHOAI_VERSION=3.5.2 bash
 
 # Step 1
 curl -sL "$BASE/setup_workshop_users_rbac.sh" | bash

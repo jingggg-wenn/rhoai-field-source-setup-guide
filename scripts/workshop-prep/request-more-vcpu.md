@@ -12,7 +12,7 @@ before you scale the GPU MachineSet.
 
 You need access to the AWS account behind the cluster. RHDP gives you that
 access when the environment is ordered with **Enable OPEN Environment?**
-checked (see [step 0](README.md#step-0-order-the-environment)).
+checked (see [Before you start](README.md#before-you-start-order-the-environment)).
 
 ## When you need this
 

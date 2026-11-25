@@ -126,7 +126,7 @@
 #
 #   - oc login completed with cluster-admin
 #   - RHOAI 3.5.2 Operator installed (rhods-operator CSV Succeeded)
-#     (install-rhoai-operator.sh installs it pinned to 3.5.2)
+#     (workshop-prep/install-rhoai-operator.sh installs it pinned to 3.5.2)
 #   - DataScienceCluster 'default-dsc' exists
 #   - Field Source base environment (Keycloak IDP, cert-manager pre-installed)
 #
@@ -474,7 +474,7 @@ success "Logged in: $(oc whoami) @ $(oc whoami --show-server)"
 RHOAI_CSV=$(oc get csv -n redhat-ods-operator --no-headers 2>/dev/null | grep rhods | awk '{print $1}' || true)
 if [ -z "$RHOAI_CSV" ]; then
     error "RHOAI Operator not installed"
-    echo "  Install it first: bash install-rhoai-operator.sh (or from OperatorHub)"
+    echo "  Install it first: bash scripts/workshop-prep/install-rhoai-operator.sh (or from OperatorHub)"
     exit 1
 fi
 success "RHOAI: $(echo "$RHOAI_CSV" | sed 's/rhods-operator\.//')"
