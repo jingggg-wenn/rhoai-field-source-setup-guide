@@ -123,11 +123,12 @@
 #
 #   - oc login completed with cluster-admin
 #   - RHOAI 3.5.2 Operator installed (rhods-operator CSV Succeeded)
+#     (install-rhoai-operator.sh installs it pinned to 3.5.2)
 #   - DataScienceCluster 'default-dsc' exists
 #   - Field Source base environment (Keycloak IDP, cert-manager pre-installed)
 #
 # Created: 02 Nov 2026
-# Last modified: 17 Nov 2026
+# Last modified: 25 Nov 2026
 ###############################################################################
 set -euo pipefail
 
@@ -467,10 +468,10 @@ if ! oc whoami &>/dev/null; then
 fi
 success "Logged in: $(oc whoami) @ $(oc whoami --show-server)"
 
-RHOAI_CSV=$(oc get csv -n redhat-ods-operator --no-headers 2>/dev/null | grep rhods | awk '{print $1}')
+RHOAI_CSV=$(oc get csv -n redhat-ods-operator --no-headers 2>/dev/null | grep rhods | awk '{print $1}' || true)
 if [ -z "$RHOAI_CSV" ]; then
     error "RHOAI Operator not installed"
-    echo "  Install 'Red Hat OpenShift AI' from OperatorHub first"
+    echo "  Install it first: bash install-rhoai-operator.sh (or from OperatorHub)"
     exit 1
 fi
 success "RHOAI: $(echo "$RHOAI_CSV" | sed 's/rhods-operator\.//')"
@@ -1028,7 +1029,7 @@ oc patch datasciencecluster default-dsc --type=merge -p '{
 success "DSC patched (all components activated)"
 
 wait_for 90 "OGX CRD" \
-    'oc get crd ogxservers.ogx.io &>/dev/null 2>&1'
+    'oc get crd ogxservers.ogx.io &>/dev/null 2>&1' || true
 echo ""
 
 ###############################################################################
@@ -1051,7 +1052,7 @@ success "demo labeled as Data Science Project"
 
 # Wait for MLflow CRD
 wait_for 120 "MLflow CRD" \
-    'oc get crd mlflows.mlflow.opendatahub.io &>/dev/null 2>&1'
+    'oc get crd mlflows.mlflow.opendatahub.io &>/dev/null 2>&1' || true
 
 if oc get crd mlflows.mlflow.opendatahub.io &>/dev/null 2>&1; then
     success "MLflow CRD registered"
