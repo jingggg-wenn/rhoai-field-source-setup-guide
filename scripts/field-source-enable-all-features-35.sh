@@ -39,9 +39,12 @@
 #    GPU Operator. Both are installed early (non-disruptive) with their
 #    required CRs (NodeFeatureDiscovery, ClusterPolicy).
 #
-# 5. No Kueue.
+# 5. No Kueue, no Trainer.
 #    Kueue is not installed by this script. The reference DSC has kueue
-#    set to Removed.
+#    set to Removed. Trainer (Kubeflow Trainer v2) is also Removed: it needs
+#    the JobSet operator, which this script does not install, and leaving it
+#    Managed keeps the DSC Not Ready (PreConditionFailed). The dashboard
+#    "trainingJobs" flag is set to false to match (Step 8).
 #
 # 6. cert-manager already in the Field Source base environment.
 #    The base sandbox pre-installs cert-manager with its own OperatorGroup
@@ -1010,7 +1013,7 @@ oc patch datasciencecluster default-dsc --type=merge -p '{
         "managementState": "Managed"
       },
       "trainer": {
-        "managementState": "Managed"
+        "managementState": "Removed"
       },
       "trainingoperator": {
         "managementState": "Managed"
@@ -1600,7 +1603,7 @@ oc patch odhdashboardconfig odh-dashboard-config \
       "projectRBAC": true,
       "promptManagement": true,
       "toolCalling": true,
-      "trainingJobs": true
+      "trainingJobs": false
     }
   }
 }'
