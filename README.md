@@ -1,7 +1,7 @@
 # RHOAI 3.5 Field Source Setup Guide
 
 Created: 04 Nov 2026
-Last modified: 05 Nov 2026
+Last modified: 25 Nov 2026
 
 Scripts that set up Red Hat OpenShift AI 3.5 on a **Field Source** cluster and
 prepare it for a hands-on workshop. Tested on RHOAI 3.5.2 and OpenShift 4.22.

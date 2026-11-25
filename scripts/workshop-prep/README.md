@@ -1,7 +1,7 @@
 # Workshop Preparation Scripts (Administrators)
 
 Created: 2026-11-04
-Last modified: 2026-11-18
+Last modified: 2026-11-25
 
 Scripts that prepare a Field Source OpenShift AI (RHOAI 3.5) cluster for a
 hands-on workshop. Each participant gets their own **Workbench** and **Showroom**
@@ -46,7 +46,8 @@ Order the Field Source base environment from the
 > provision more GPU nodes, you might need to increase the vCPU limit. Otherwise
 > new GPU machines stay in `Provisioning` or `Failed` with a quota error
 > (`oc get machines -n openshift-machine-api`). Worker nodes (`m5a.4xlarge`) are a
-> different instance type and are not part of this limit.
+> different instance type and are not part of this limit. To raise it, see
+> [GPU vCPU limit: requesting more](#gpu-vcpu-limit-requesting-more).
 
 Then enable the workshop user interface (leave GitOps, Lightspeed, and LiteMaaS
 unchecked unless you need them):
@@ -184,6 +185,23 @@ Adjust when your workshop differs:
 These counts are for CPU workers only. GPU nodes for model serving are added
 separately in [step 3](#step-3-gpu_machineset_hardwareprofilessh).
 
+## GPU vCPU limit: requesting more
+
+GPU nodes count against the AWS quota **Running On-Demand G and VT instances**,
+measured in vCPU. As noted in [step 0](#step-0-order-the-environment), it can be
+as low as **64 vCPU**, which is at most 8 `g6.2xlarge` GPU nodes (8 vCPU each).
+
+| GPU nodes you plan | vCPU needed | Action |
+| ------------------ | ----------- | ------ |
+| Up to 8 | Up to 64 | Usually fine. Check the current limit first. |
+| More than 8 | More than 64 | Request a quota increase from AWS, at least half a day before the workshop |
+
+[`request-more-vcpu.md`](request-more-vcpu.md) walks through raising the limit:
+finding the cluster's region, signing in to the AWS console with the RHDP
+credentials, submitting the Service Quotas request, following the AWS Support
+case, and how long the new limit takes to be provisioned before you scale the
+GPU MachineSet.
+
 ---
 
 ## Step 1: `setup_workshop_users_rbac.sh`
@@ -294,7 +312,7 @@ demand in us-east.
 > **G/VT vCPU limit:** each `g6.2xlarge` GPU node adds 8 vCPU to the G and VT
 > instance limit. Without the OPEN environment, that limit can be as low as
 > 64 vCPU, so you might need to increase it if you plan to provision more GPU
-> nodes (see [step 0](#step-0-order-the-environment)). If a GPU
+> nodes (see [requesting more](#gpu-vcpu-limit-requesting-more)). If a GPU
 > machine stays in `Provisioning` or `Failed`, check
 > `oc describe machine <name> -n openshift-machine-api` for a quota error.
 
