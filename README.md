@@ -71,4 +71,23 @@ Sets up Models-as-a-Service (MaaS). Run after Script 1 completes.
 | 4 | Kuadrant AuthPolicy reconciliation |
 | 5 | Verification |
 
-Sample output from Scripts 1 and 2 is in [`output-log/`](output-log/).
+### Add-on: [`add-on-scripts/field-source-setup-model-registry-35.sh`](scripts/add-on-scripts/field-source-setup-model-registry-35.sh)
+
+Optional. Run **last**, after Scripts 1 and 2 are done, to give the cluster
+sample workloads for a platform walkthrough: a model registry with a
+two-version model deployed in the `demo` project. CPU only, so no GPU is
+needed. Standalone and safe to re-run. See
+[`scripts/add-on-scripts/README.md`](scripts/add-on-scripts/README.md).
+
+| Step | What it does |
+| ---- | ------------ |
+| 1 | Prerequisites check (token login, KServe Managed, `default-profile`, vLLM CPU runtime template) |
+| 2 | Model registry component: patched to `Managed` only if it isn't already |
+| 3 | Registry instance `demo-model-registry` with the default (operator-managed) PostgreSQL |
+| 4 | Register model `minilm-l6` with versions `v1` (modelcar `1.5`) and `v2` (modelcar `3.0`) |
+| 5 | Project `demo` |
+| 6 | Deploy `minilm-l6-v1` and `minilm-l6-v2` side by side (vLLM CPU, `default-profile` customized to 4 CPU / 8Gi limits) |
+| 7 | Registry linkage check: fixes any registry record that points at the wrong version |
+| 8 | Verification (embeddings endpoints, auth, registry records) |
+
+Sample output from Scripts 1 and 2 and the model registry add-on is in [`output-log/`](output-log/).

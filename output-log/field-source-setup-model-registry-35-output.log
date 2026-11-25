@@ -1,0 +1,86 @@
+==============================================
+ RHOAI 3.5.2 Field Source -- Model Registry
+==============================================
+  Step  | What                                       | Risk
+  ------|--------------------------------------------|-----------------
+   1    | Prerequisites check                        | None
+   2    | Model registry component (patch if needed) | None
+   3    | Registry instance (default PostgreSQL)     | None
+   4    | Register model + versions v1, v2           | None
+   5    | Project                                    | None
+   6    | Deploy v1 and v2 (both active)             | None
+   7    | Registry linkage check (self-heal)         | None
+   8    | Verification (endpoints + registry)        | None
+[INFO] (0m00s) Registry: demo-model-registry | Model: minilm-l6 | Project: demo
+[INFO] (0m00s) === Step 1/8: Prerequisites ===
+[OK]   Logged in: admin @ https://api.ocp.6tx4g.sandbox3431.opentlc.com:6443
+[OK]   OAuth token available
+[OK]   curl and jq available
+[OK]   RHOAI: 3.5.2
+[OK]   DSC: default-dsc
+[OK]   KServe: Managed
+[OK]   HardwareProfile: default-profile (memory max 8Gi)
+[OK]   Runtime template: vllm-cpu-x86-runtime-template (vLLM v0.24.0)
+[OK]   Project 'demo' exists; no name clashes (other content is left untouched)
+[INFO] (0m15s) === Step 2/8: Model registry component ===
+[OK]   modelregistry already Managed
+[OK]   ModelRegistryReady condition
+[OK]   Registries namespace 'rhoai-model-registries'
+[INFO] (0m19s) === Step 3/8: Registry instance 'demo-model-registry' ===
+[OK]   ModelRegistry 'demo-model-registry' already exists (not created by this script; reused as-is, only a model is added)
+[OK]   ModelRegistry Available
+[OK]   Registry route demo-model-registry-https
+[OK]   Registry REST API reachable
+[OK]   Anonymous access rejected (401)
+[INFO] (0m27s) === Step 4/8: Register model 'minilm-l6' ===
+[OK]   Registered model 'minilm-l6' exists (id 1), description unchanged
+[OK]   Version v1 exists (id 2), description unchanged
+[OK]     artifact unchanged -> oci://registry.redhat.io/rhai/modelcar-all-minilm-l6-v2:1.5
+[OK]   Version v2 exists (id 3), description unchanged
+[OK]     artifact unchanged -> oci://registry.redhat.io/rhai/modelcar-all-minilm-l6-v2:3.0-1793793003
+[INFO] (1m48s) === Step 5/8: Project 'demo' ===
+[OK]   Namespace 'demo' exists
+[OK]   'demo' labeled as a Data Science Project
+[INFO] (1m50s) === Step 6/8: Deploy minilm-l6-v1 and minilm-l6-v2 ===
+[OK]   ServingRuntime minilm-l6-v1
+[OK]   InferenceService minilm-l6-v1 (unchanged) -> modelcar-all-minilm-l6-v2:1.5
+[OK]   ServingRuntime minilm-l6-v2
+[OK]   InferenceService minilm-l6-v2 (unchanged) -> modelcar-all-minilm-l6-v2:3.0-1793793003
+[INFO] (2m06s) Waiting for both deployments (first run pulls images; ~2-4 min)...
+[OK]   minilm-l6-v1 Ready
+[OK]   minilm-l6-v2 Ready
+[INFO] (2m08s) === Step 7/8: Registry linkage ===
+[OK]   minilm-l6-v1 recorded by the registry operator
+[OK]     record 5: minilm-l6-v1 -> version v1 (id 2)
+[OK]   minilm-l6-v2 recorded by the registry operator
+[OK]     record 6: minilm-l6-v2 -> version v2 (id 3)
+[INFO] (2m13s) === Step 8/8: Verification ===
+[INFO] (2m13s) Platform:
+  [OK] ModelRegistryReady (DSC)
+  [OK] ModelRegistry demo-model-registry (rhoai-model-registries)
+[INFO] (2m15s) Registry content:
+  [OK] Model minilm-l6 (id 1) versions (v1,v2)
+[INFO] (2m16s) Deployments and endpoints:
+  [OK] minilm-l6-v1 Ready
+  [OK] minilm-l6-v1 rejects anonymous calls (HTTP 401)
+  [OK] minilm-l6-v1 /v1/embeddings (384 dims)
+  [OK] minilm-l6-v2 Ready
+  [OK] minilm-l6-v2 rejects anonymous calls (HTTP 401)
+  [OK] minilm-l6-v2 /v1/embeddings (384 dims)
+[INFO] (2m23s) Registry records (deployments seen by the registry):
+  #5  minilm-l6-v1  version-id=2  DEPLOYED
+  #6  minilm-l6-v2  version-id=3  DEPLOYED
+  [OK] minilm-l6-v1 recorded as DEPLOYED (version v1)
+  [OK] minilm-l6-v2 recorded as DEPLOYED (version v2)
+[INFO] (2m25s) Dashboard URL:
+  https://data-science-gateway.apps.ocp.6tx4g.sandbox3431.opentlc.com
+==============================================
+[OK]   All checks passed. Total time: 2m26s
+  Walkthrough in the dashboard:
+  - AI hub -> Models -> Registry -> demo-model-registry -> minilm-l6
+      Versions tab: v1 and v2, each with 1 deployment
+  - Projects -> demo -> Deployments: minilm-l6-v1, minilm-l6-v2
+  - Settings -> Model resources and operations -> Model registry settings
+      'No project permissions' is expected; grant a project there only if
+      its workbenches/pipelines (service accounts) need registry access.
+==============================================
